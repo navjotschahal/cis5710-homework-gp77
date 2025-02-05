@@ -77,6 +77,33 @@ def runCocotbTests(pytestconfig):
         pass
     pass
 
+def runCocotbTestsGp8(pytestconfig):
+    """Run GP8 tests"""
+
+    verilog_sources = [PROJECT_PATH / "cla.sv"]  # Ensure the correct file is passed
+    toplevel_module = "gp8"  
+
+    runr = get_runner(cu.SIM)
+    runr.build(
+        verilog_sources=verilog_sources,
+        hdl_toplevel=toplevel_module,
+        includes=[PROJECT_PATH],
+        build_dir=cu.SIM_BUILD_DIR,
+        waves=True,
+        build_args=cu.VERILATOR_FLAGS,
+    )
+
+    runr.test(
+        seed=12345,
+        waves=True,
+        hdl_toplevel=toplevel_module, 
+        test_module="testbench", 
+        testcase="test_gp8_zeroes"
+    )
+
+
+
+
 
 #########################
 ## TEST CASES ARE HERE ##
@@ -165,3 +192,79 @@ async def test_random1k(dut):
         assertEquals(exp_sum, actual_sum, msg)
         pass
     pass
+
+#########################
+## TEST CASES FOR gp8  ##
+#########################
+
+@cocotb.test()
+async def test_gp8_zeroes(dut):
+    """ Test case: All inputs are zero, expecting zero outputs """
+    await Timer(1, "ns")
+    dut.gin.value = 0x00
+    dut.pin.value = 0x00
+    dut.cin.value = 0
+    await Timer(1, "ns")
+    assertEquals(0, dut.gout.value)
+    assertEquals(0, dut.pout.value)
+    assertEquals(0x00, dut.cout.value)
+
+@cocotb.test()
+async def test_gp8_msb_generate(dut):
+    """ Test case: Only the MSB generates a carry """
+    await Timer(1, "ns")
+    dut.gin.value = 0x80  # 1000 0000
+    dut.pin.value = 0x00
+    dut.cin.value = 0x0
+    await Timer(1, "ns")
+    assertEquals(1, dut.gout.value)
+    assertEquals(0, dut.pout.value)
+    assertEquals(0x00, dut.cout.value)
+
+@cocotb.test()
+async def test_gp8_propagate_full(dut):
+    """ Test case: All bits propagate, expecting cout[6:0] to propagate """
+    await Timer(1, "ns")
+    dut.gin.value = 0x00
+    dut.pin.value = 0xFF  # 1111 1111
+    dut.cin.value = 1
+    await Timer(1, "ns")
+    assertEquals(0, dut.gout.value)
+    assertEquals(1, dut.pout.value)
+    assertEquals(0x7F, dut.cout.value)  # 7-bit carry output
+
+@cocotb.test()
+async def test_gp8_propagate_partway(dut):
+    """ Test case: Only lower 7 bits propagate """
+    await Timer(1, "ns")
+    dut.gin.value = 0x00
+    dut.pin.value = 0x7F  # 0111 1111
+    dut.cin.value = 1
+    await Timer(1, "ns")
+    assertEquals(0, dut.gout.value)
+    assertEquals(0, dut.pout.value)  # Since MSB is 0
+    assertEquals(0x7F, dut.cout.value)
+
+@cocotb.test()
+async def test_gp8_propagate_full_nocarry(dut):
+    """ Test case: Full propagate but no incoming carry """
+    await Timer(1, "ns")
+    dut.gin.value = 0x00
+    dut.pin.value = 0xFF  # 1111 1111
+    dut.cin.value = 0
+    await Timer(1, "ns")
+    assertEquals(0, dut.gout.value)
+    assertEquals(1, dut.pout.value)
+    assertEquals(0x00, dut.cout.value)
+
+@cocotb.test()
+async def test_gp8_propagate_and_generate(dut):
+    """ Test case: All bits generate and propagate simultaneously """
+    await Timer(1, "ns")
+    dut.gin.value = 0xFF  # 1111 1111
+    dut.pin.value = 0xFF  # 1111 1111
+    dut.cin.value = 1
+    await Timer(1, "ns")
+    assertEquals(1, dut.gout.value)
+    assertEquals(1, dut.pout.value)
+    assertEquals(0x7F, dut.cout.value)  # 7-bit carry output
