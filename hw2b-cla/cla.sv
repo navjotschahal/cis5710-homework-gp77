@@ -99,17 +99,14 @@ module cla (
     output wire [31:0] sum
 );
 
-  // Generate and propagate signals for each bit
   wire [31:0] g, p;
-  assign g = a & b;  // Generate
-  assign p = a | b;  // Propagate
+  assign g = a & b;
+  assign p = a | b;
 
-  // Intermediate carry signals
   wire [6:0] carry_internal_0, carry_internal_1, carry_internal_2, carry_internal_3;
   wire [31:0] carry;
   wire gout_0, pout_0, gout_1, pout_1, gout_2, pout_2, gout_3, pout_3;
 
-  // Compute carry for each 8-bit block using gp8
   gp8 gp8_0 (
       .gin (g[7:0]),
       .pin (p[7:0]),
@@ -119,57 +116,51 @@ module cla (
       .cout(carry_internal_0)
   );
 
+  wire carry_8, carry_16, carry_24, carry_32;
+
+  assign carry_8  = gout_0 | (pout_0 & cin);
+  assign carry[8] = carry_8;
+
   gp8 gp8_1 (
       .gin (g[15:8]),
       .pin (p[15:8]),
-      .cin (carry_internal_0[6]),
+      .cin (carry[8]),
       .gout(gout_1),
       .pout(pout_1),
       .cout(carry_internal_1)
   );
 
+  assign carry_16  = gout_1 | (pout_1 & carry_8);
+  assign carry[16] = carry_16;
+
   gp8 gp8_2 (
       .gin (g[23:16]),
       .pin (p[23:16]),
-      .cin (carry_internal_1[6]),
+      .cin (carry[16]),
       .gout(gout_2),
       .pout(pout_2),
       .cout(carry_internal_2)
   );
 
+  assign carry_24  = gout_2 | (pout_2 & carry_16);
+  assign carry[24] = carry_24;
+
   gp8 gp8_3 (
       .gin (g[31:24]),
       .pin (p[31:24]),
-      .cin (carry_internal_2[6]),
+      .cin (carry[24]),
       .gout(gout_3),
       .pout(pout_3),
       .cout(carry_internal_3)
   );
 
-  // Ensure correct bit-width for carry assignment
   assign carry[0] = cin;
   assign carry[7:1] = carry_internal_0[6:0];
-  assign carry[8] = carry_internal_0[6];
   assign carry[15:9] = carry_internal_1[6:0];
-  assign carry[16] = carry_internal_1[6];
   assign carry[23:17] = carry_internal_2[6:0];
-  assign carry[24] = carry_internal_2[6];
+  assign carry_32 = gout_3 | (pout_3 & carry_24);
   assign carry[31:25] = carry_internal_3[6:0];
 
-  // Debugging carry propagation
-  always @(carry) begin
-    $display("CARRY FULL: %b", carry);
-  end
-
-  always @(gout_0, pout_0, gout_1, pout_1, gout_2, pout_2, gout_3, pout_3) begin
-    $display(
-        "gp8_0: gout=%b pout=%b | gp8_1: gout=%b pout=%b | gp8_2: gout=%b pout=%b | gp8_3: gout=%b pout=%b",
-        gout_0, pout_0, gout_1, pout_1, gout_2, pout_2, gout_3, pout_3);
-  end
-
-  // Compute the final sum, ensuring truncation to 32 bits
   assign sum = a ^ b ^ carry;
-
-
 
 endmodule
