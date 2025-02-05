@@ -53,11 +53,10 @@ module gp8 (
     output wire [6:0] cout
 );
 
-  // Intermediate signals for lower and upper 4-bit groups
-  wire gout_low, pout_low;
-  wire gout_high, pout_high;
-  wire c4;  // Carry from lower block to upper block
-  wire [2:0] cout_low, cout_high;  // Match gp4 output size
+  // Intermediate signals for 4-bit groups
+  wire gout_low, pout_low, gout_high, pout_high;
+  wire c4;
+  wire [2:0] cout_low, cout_high;  // FIX: Make cout signals 3 bits instead of 4
 
   // Lower 4-bit gp4 block (bits 0-3)
   gp4 gp4_low (
@@ -66,32 +65,29 @@ module gp8 (
       .cin (cin),
       .gout(gout_low),
       .pout(pout_low),
-      .cout(cout_low)
+      .cout(cout_low)   // FIX: cout_low is 3 bits, matching gp4 output
   );
 
   // Compute carry into upper block
   assign c4 = gout_low | (pout_low & cin);
 
-  // Upper 4-bit gp4 block (bits 4-7)
+  // Upper 4-bit gp4 block (bits 4-7) - FIX BIT SLICING
   gp4 gp4_high (
-      .gin (gin[7:4]),
-      .pin (pin[7:4]),
+      .gin (gin[7:4]),   // FIX: Use 7:4 instead of 7:3 (4 bits wide)
+      .pin (pin[7:4]),   // FIX: Use 7:4 instead of 7:3 (4 bits wide)
       .cin (c4),
       .gout(gout_high),
       .pout(pout_high),
-      .cout(cout_high)
+      .cout(cout_high)   // FIX: cout_high is 3 bits
   );
 
-  // Combine carry outputs correctly
-  assign cout[2:0] = cout_low;  // Assign lower 3 carry bits
-  assign cout[6:3] = {cout_high, c4};  // Assign upper 3 carry bits + c4
+  // Correct carry output assignment
+  assign cout[2:0] = cout_low;  // Lower 3 bits
+  assign cout[6:3] = {cout_high, c4};  // Upper 3 bits + carry into upper block
 
-  // Compute final generate and propagate signals for the 8-bit section
-  assign gout      = gout_high | (pout_high & gout_low);
-  assign pout      = pout_low & pout_high;
-
-
-
+  // Compute final generate and propagate
+  assign gout = gout_high | (pout_high & gout_low);
+  assign pout = pout_low & pout_high;
 
 endmodule
 
@@ -126,7 +122,7 @@ module cla (
   gp8 gp8_1 (
       .gin (g[15:8]),
       .pin (p[15:8]),
-      .cin (carry_internal_0[6] | gout_0),
+      .cin (carry_internal_0[6]),
       .gout(gout_1),
       .pout(pout_1),
       .cout(carry_internal_1)
@@ -135,7 +131,7 @@ module cla (
   gp8 gp8_2 (
       .gin (g[23:16]),
       .pin (p[23:16]),
-      .cin (carry_internal_1[6] | gout_1),
+      .cin (carry_internal_1[6]),
       .gout(gout_2),
       .pout(pout_2),
       .cout(carry_internal_2)
@@ -144,21 +140,21 @@ module cla (
   gp8 gp8_3 (
       .gin (g[31:24]),
       .pin (p[31:24]),
-      .cin (carry_internal_2[6] | gout_2),
+      .cin (carry_internal_2[6]),
       .gout(gout_3),
       .pout(pout_3),
       .cout(carry_internal_3)
   );
 
-  // Correct carry assignment ensuring proper propagation
+  // Ensure correct bit-width for carry assignment
   assign carry[0] = cin;
   assign carry[7:1] = carry_internal_0[6:0];
-  assign carry[8] = carry_internal_0[6] | gout_0;
+  assign carry[8] = carry_internal_0[6];
   assign carry[15:9] = carry_internal_1[6:0];
-  assign carry[16] = carry_internal_1[6] | (pout_1 & carry_internal_0[6]) | gout_1;
+  assign carry[16] = carry_internal_1[6];
   assign carry[23:17] = carry_internal_2[6:0];
-  assign carry[24] = carry_internal_2[6] | (pout_2 & carry_internal_1[6]) | gout_2;
-  assign carry[31:25] = carry_internal_3[6:0] | ({7{gout_3}});
+  assign carry[24] = carry_internal_2[6];
+  assign carry[31:25] = carry_internal_3[6:0];
 
   // Debugging carry propagation
   always @(carry) begin
@@ -173,7 +169,6 @@ module cla (
 
   // Compute the final sum, ensuring truncation to 32 bits
   assign sum = a ^ b ^ carry;
-
 
 
 
