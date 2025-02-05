@@ -53,95 +53,128 @@ module gp8 (
     output wire [6:0] cout
 );
 
-  wire g4_0, p4_0, g4_1, p4_1;  // These must be defined before use!
+  // Intermediate signals for lower and upper 4-bit groups
+  wire gout_low, pout_low;
+  wire gout_high, pout_high;
+  wire c4;  // Carry from lower block to upper block
+  wire [2:0] cout_low, cout_high;  // Match gp4 output size
 
-
-  wire [2:0] cout_low, cout_high;  // Use temporary carry wires
-
-  gp4 gp_low (
+  // Lower 4-bit gp4 block (bits 0-3)
+  gp4 gp4_low (
       .gin (gin[3:0]),
       .pin (pin[3:0]),
       .cin (cin),
-      .gout(g4_0),
-      .pout(p4_0),
+      .gout(gout_low),
+      .pout(pout_low),
       .cout(cout_low)
   );
 
-  gp4 gp_high (
+  // Compute carry into upper block
+  assign c4 = gout_low | (pout_low & cin);
+
+  // Upper 4-bit gp4 block (bits 4-7)
+  gp4 gp4_high (
       .gin (gin[7:4]),
       .pin (pin[7:4]),
-      .cin (g4_0 | (p4_0 & cin)),
-      .gout(g4_1),
-      .pout(p4_1),
+      .cin (c4),
+      .gout(gout_high),
+      .pout(pout_high),
       .cout(cout_high)
   );
 
-  assign gout = g4_1 | (p4_1 & g4_0);
-  assign pout = p4_1 & p4_0;
+  // Combine carry outputs correctly
+  assign cout[2:0] = cout_low;  // Assign lower 3 carry bits
+  assign cout[6:3] = {cout_high, c4};  // Assign upper 3 carry bits + c4
 
-  assign cout[2:0] = cout_low;
-  assign cout[5:3] = cout_high;
+  // Compute final generate and propagate signals for the 8-bit section
+  assign gout      = gout_high | (pout_high & gout_low);
+  assign pout      = pout_low & pout_high;
+
+
+
 
 endmodule
 
+
 module cla (
     input  wire [31:0] a,
-    b,
+    input  wire [31:0] b,
     input  wire        cin,
     output wire [31:0] sum
 );
 
+  // Generate and propagate signals for each bit
   wire [31:0] g, p;
-  wire [30:0] c;
-  wire g8_1, p8_1, g8_2, p8_2, g8_3, p8_3, g8_4, p8_4;
+  assign g = a & b;  // Generate
+  assign p = a | b;  // Propagate
 
-  wire [6:0] c_internal1, c_internal2, c_internal3;
+  // Intermediate carry signals
+  wire [6:0] carry_internal_0, carry_internal_1, carry_internal_2, carry_internal_3;
+  wire [31:0] carry;
+  wire gout_0, pout_0, gout_1, pout_1, gout_2, pout_2, gout_3, pout_3;
 
-  gp8 gp_block1 (
+  // Compute carry for each 8-bit block using gp8
+  gp8 gp8_0 (
       .gin (g[7:0]),
       .pin (p[7:0]),
       .cin (cin),
-      .gout(g8_1),
-      .pout(p8_1),
-      .cout(c_internal1)
+      .gout(gout_0),
+      .pout(pout_0),
+      .cout(carry_internal_0)
   );
 
-  gp8 gp_block2 (
+  gp8 gp8_1 (
       .gin (g[15:8]),
       .pin (p[15:8]),
-      .cin (c_internal1[6]),
-      .gout(g8_2),
-      .pout(p8_2),
-      .cout(c_internal2)
+      .cin (carry_internal_0[6] | gout_0),
+      .gout(gout_1),
+      .pout(pout_1),
+      .cout(carry_internal_1)
   );
 
-  gp8 gp_block3 (
+  gp8 gp8_2 (
       .gin (g[23:16]),
       .pin (p[23:16]),
-      .cin (c_internal2[6]),
-      .gout(g8_3),
-      .pout(p8_3),
-      .cout(c_internal3)
+      .cin (carry_internal_1[6] | gout_1),
+      .gout(gout_2),
+      .pout(pout_2),
+      .cout(carry_internal_2)
   );
 
-  gp8 gp_block4 (
+  gp8 gp8_3 (
       .gin (g[31:24]),
       .pin (p[31:24]),
-      .cin (c_internal3[6]),
-      .gout(g8_4),
-      .pout(p8_4),
-      .cout(c[29:23])
+      .cin (carry_internal_2[6] | gout_2),
+      .gout(gout_3),
+      .pout(pout_3),
+      .cout(carry_internal_3)
   );
 
-  // Compute sum bits
-  assign sum[0] = a[0] ^ b[0] ^ cin;
+  // Correct carry assignment ensuring proper propagation
+  assign carry[0] = cin;
+  assign carry[7:1] = carry_internal_0[6:0];
+  assign carry[8] = carry_internal_0[6] | gout_0;
+  assign carry[15:9] = carry_internal_1[6:0];
+  assign carry[16] = carry_internal_1[6] | (pout_1 & carry_internal_0[6]) | gout_1;
+  assign carry[23:17] = carry_internal_2[6:0];
+  assign carry[24] = carry_internal_2[6] | (pout_2 & carry_internal_1[6]) | gout_2;
+  assign carry[31:25] = carry_internal_3[6:0] | ({7{gout_3}});
 
-  genvar i;
-  generate
-    for (i = 1; i < 32; i = i + 1) begin : sum_generation
-      assign sum[i] = a[i] ^ b[i] ^ c[i-1];
-    end
-  endgenerate
+  // Debugging carry propagation
+  always @(carry) begin
+    $display("CARRY FULL: %b", carry);
+  end
+
+  always @(gout_0, pout_0, gout_1, pout_1, gout_2, pout_2, gout_3, pout_3) begin
+    $display(
+        "gp8_0: gout=%b pout=%b | gp8_1: gout=%b pout=%b | gp8_2: gout=%b pout=%b | gp8_3: gout=%b pout=%b",
+        gout_0, pout_0, gout_1, pout_1, gout_2, pout_2, gout_3, pout_3);
+  end
+
+  // Compute the final sum, ensuring truncation to 32 bits
+  assign sum = a ^ b ^ carry;
+
+
 
 
 endmodule
