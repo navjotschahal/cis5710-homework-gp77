@@ -39,7 +39,7 @@ module gp4 (
   assign cout[2] = gin[2] | (pin[2] & gin[1]) | (pin[2] & pin[1] & gin[0]) | (pin[2] & pin[1] & pin[0] & cin);
 
   assign gout = gin[3] | (pin[3] & gin[2]) | (pin[3] & pin[2] & gin[1]) | (pin[3] & pin[2] & pin[1] & gin[0]);
-  assign pout = &pin;  // Equivalent to pin[3] & pin[2] & pin[1] & pin[0]
+  assign pout = &pin;
 
 endmodule
 
@@ -56,7 +56,7 @@ module gp8 (
   // Intermediate signals for 4-bit groups
   wire gout_low, pout_low, gout_high, pout_high;
   wire c4;
-  wire [2:0] cout_low, cout_high;  // FIX: Make cout signals 3 bits instead of 4
+  wire [2:0] cout_low, cout_high;
 
   // Lower 4-bit gp4 block (bits 0-3)
   gp4 gp4_low (
@@ -65,25 +65,23 @@ module gp8 (
       .cin (cin),
       .gout(gout_low),
       .pout(pout_low),
-      .cout(cout_low)   // FIX: cout_low is 3 bits, matching gp4 output
+      .cout(cout_low)
   );
 
   // Compute carry into upper block
   assign c4 = gout_low | (pout_low & cin);
 
-  // Upper 4-bit gp4 block (bits 4-7) - FIX BIT SLICING
   gp4 gp4_high (
-      .gin (gin[7:4]),   // FIX: Use 7:4 instead of 7:3 (4 bits wide)
-      .pin (pin[7:4]),   // FIX: Use 7:4 instead of 7:3 (4 bits wide)
+      .gin (gin[7:4]),
+      .pin (pin[7:4]),
       .cin (c4),
       .gout(gout_high),
       .pout(pout_high),
-      .cout(cout_high)   // FIX: cout_high is 3 bits
+      .cout(cout_high)
   );
 
-  // Correct carry output assignment
-  assign cout[2:0] = cout_low;  // Lower 3 bits
-  assign cout[6:3] = {cout_high, c4};  // Upper 3 bits + carry into upper block
+  assign cout[2:0] = cout_low;
+  assign cout[6:3] = {cout_high, c4};
 
   // Compute final generate and propagate
   assign gout = gout_high | (pout_high & gout_low);
