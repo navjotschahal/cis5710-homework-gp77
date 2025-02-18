@@ -85,7 +85,9 @@ module DatapathSingleCycle (
 
   // J - unconditional jumps
   wire [20:0] imm_j;
-  assign {imm_j[20], imm_j[10:1], imm_j[11], imm_j[19:12], imm_j[0]} = {insn_from_imem[31:12], 1'b0};
+  assign {imm_j[20], imm_j[10:1], imm_j[11], imm_j[19:12], imm_j[0]} = {
+    insn_from_imem[31:12], 1'b0
+  };
 
   wire [`REG_SIZE] imm_i_sext = {{20{imm_i[11]}}, imm_i[11:0]};
   wire [`REG_SIZE] imm_s_sext = {{20{imm_s[11]}}, imm_s[11:0]};
@@ -107,21 +109,21 @@ module DatapathSingleCycle (
   localparam bit [`OPCODE_SIZE] OpAuipc = 7'b00_101_11;
   localparam bit [`OPCODE_SIZE] OpLui = 7'b01_101_11;
 
-  wire insn_lui   = insn_opcode == OpLui;
+  wire insn_lui = insn_opcode == OpLui;
   wire insn_auipc = insn_opcode == OpAuipc;
-  wire insn_jal   = insn_opcode == OpJal;
-  wire insn_jalr  = insn_opcode == OpJalr;
+  wire insn_jal = insn_opcode == OpJal;
+  wire insn_jalr = insn_opcode == OpJalr;
 
-  wire insn_beq  = insn_opcode == OpBranch && insn_from_imem[14:12] == 3'b000;
-  wire insn_bne  = insn_opcode == OpBranch && insn_from_imem[14:12] == 3'b001;
-  wire insn_blt  = insn_opcode == OpBranch && insn_from_imem[14:12] == 3'b100;
-  wire insn_bge  = insn_opcode == OpBranch && insn_from_imem[14:12] == 3'b101;
+  wire insn_beq = insn_opcode == OpBranch && insn_from_imem[14:12] == 3'b000;
+  wire insn_bne = insn_opcode == OpBranch && insn_from_imem[14:12] == 3'b001;
+  wire insn_blt = insn_opcode == OpBranch && insn_from_imem[14:12] == 3'b100;
+  wire insn_bge = insn_opcode == OpBranch && insn_from_imem[14:12] == 3'b101;
   wire insn_bltu = insn_opcode == OpBranch && insn_from_imem[14:12] == 3'b110;
   wire insn_bgeu = insn_opcode == OpBranch && insn_from_imem[14:12] == 3'b111;
 
-  wire insn_lb  = insn_opcode == OpLoad && insn_from_imem[14:12] == 3'b000;
-  wire insn_lh  = insn_opcode == OpLoad && insn_from_imem[14:12] == 3'b001;
-  wire insn_lw  = insn_opcode == OpLoad && insn_from_imem[14:12] == 3'b010;
+  wire insn_lb = insn_opcode == OpLoad && insn_from_imem[14:12] == 3'b000;
+  wire insn_lh = insn_opcode == OpLoad && insn_from_imem[14:12] == 3'b001;
+  wire insn_lw = insn_opcode == OpLoad && insn_from_imem[14:12] == 3'b010;
   wire insn_lbu = insn_opcode == OpLoad && insn_from_imem[14:12] == 3'b100;
   wire insn_lhu = insn_opcode == OpLoad && insn_from_imem[14:12] == 3'b101;
 
@@ -129,12 +131,12 @@ module DatapathSingleCycle (
   wire insn_sh = insn_opcode == OpStore && insn_from_imem[14:12] == 3'b001;
   wire insn_sw = insn_opcode == OpStore && insn_from_imem[14:12] == 3'b010;
 
-  wire insn_addi  = insn_opcode == OpRegImm && insn_from_imem[14:12] == 3'b000;
-  wire insn_slti  = insn_opcode == OpRegImm && insn_from_imem[14:12] == 3'b010;
+  wire insn_addi = insn_opcode == OpRegImm && insn_from_imem[14:12] == 3'b000;
+  wire insn_slti = insn_opcode == OpRegImm && insn_from_imem[14:12] == 3'b010;
   wire insn_sltiu = insn_opcode == OpRegImm && insn_from_imem[14:12] == 3'b011;
-  wire insn_xori  = insn_opcode == OpRegImm && insn_from_imem[14:12] == 3'b100;
-  wire insn_ori   = insn_opcode == OpRegImm && insn_from_imem[14:12] == 3'b110;
-  wire insn_andi  = insn_opcode == OpRegImm && insn_from_imem[14:12] == 3'b111;
+  wire insn_xori = insn_opcode == OpRegImm && insn_from_imem[14:12] == 3'b100;
+  wire insn_ori = insn_opcode == OpRegImm && insn_from_imem[14:12] == 3'b110;
+  wire insn_andi = insn_opcode == OpRegImm && insn_from_imem[14:12] == 3'b111;
 
   wire insn_slli = insn_opcode == OpRegImm && insn_from_imem[14:12] == 3'b001 && insn_from_imem[31:25] == 7'd0;
   wire insn_srli = insn_opcode == OpRegImm && insn_from_imem[14:12] == 3'b101 && insn_from_imem[31:25] == 7'd0;
@@ -164,7 +166,7 @@ module DatapathSingleCycle (
   wire insn_fence = insn_opcode == OpMiscMem;
 
   // this code is only for simulation, not synthesis
-  `ifndef SYNTHESIS
+`ifndef SYNTHESIS
   `include "RvDisassembler.sv"
   string disasm_string;
   always_comb begin
@@ -176,7 +178,7 @@ module DatapathSingleCycle (
   for (i = 0; i < 32; i = i + 1) begin : gen_disasm
     assign disasm_wire[(((i+1))*8)-1:((i)*8)] = disasm_string[31-i];
   end
-  `endif
+`endif
 
   // program counter
   logic [`REG_SIZE] pcNext, pcCurrent;
@@ -215,67 +217,68 @@ module DatapathSingleCycle (
 
 
   RegFile rf (
-    .clk(clk),
-    .rst(rst),
-    .we(rf_we),
-    .rd(rf_rd),
-    .rd_data(rf_rd_data),
-    .rs1(insn_rs1),
-    .rs2(insn_rs2),
-    .rs1_data(rs1_data),
-    .rs2_data(rs2_data));
+      .clk(clk),
+      .rst(rst),
+      .we(rf_we),
+      .rd(rf_rd),
+      .rd_data(rf_rd_data),
+      .rs1(insn_rs1),
+      .rs2(insn_rs2),
+      .rs1_data(rs1_data),
+      .rs2_data(rs2_data)
+  );
 
-    logic [`REG_SIZE] cla_sum;
+  logic [`REG_SIZE] cla_sum;
 
-    logic [`REG_SIZE] cla_b_input;
+  logic [`REG_SIZE] cla_b_input;
 
-// always_comb begin
-//   if (insn_addi) begin
-//     cla_b_input = imm_i_sext;
-//   end else if (insn_add) begin
-//     cla_b_input = rs2_data;
-//   end else if (insn_sub) begin
-//     cla_b_input = ~rs2_data + 1;
-//   end else begin
-//     cla_b_input = 32'd0; // Default value
-//   end
-// end
+  // always_comb begin
+  //   if (insn_addi) begin
+  //     cla_b_input = imm_i_sext;
+  //   end else if (insn_add) begin
+  //     cla_b_input = rs2_data;
+  //   end else if (insn_sub) begin
+  //     cla_b_input = ~rs2_data + 1;
+  //   end else begin
+  //     cla_b_input = 32'd0; // Default value
+  //   end
+  // end
 
-always_comb begin
-  case (1'b1)
-    insn_addi: cla_b_input = imm_i_sext;
-    insn_add:  cla_b_input = rs2_data;
-    insn_sub:  cla_b_input = ~rs2_data + 1;
-    default:   cla_b_input = 32'd0; // Default value
-  endcase
-end
+  always_comb begin
+    case (1'b1)
+      insn_addi: cla_b_input = imm_i_sext;
+      insn_add:  cla_b_input = rs2_data;
+      insn_sub:  cla_b_input = ~rs2_data + 1;
+      default:   cla_b_input = 32'd0;  // Default value
+    endcase
+  end
 
-cla cla_adder (
-  .a(rs1_data),
-  .b(cla_b_input),
-  .cin(1'b0),
-  .sum(cla_sum)
-);
+  cla cla_adder (
+      .a  (rs1_data),
+      .b  (cla_b_input),
+      .cin(1'b0),
+      .sum(cla_sum)
+  );
 
-    // cla cla_adder_add (
-    //         .a(rs1_data),
-    //         .b(rs2_data),
-    //         .cin(1'b0),
-    //         .sum(cla_sum)
-    //       );
-              
+  // cla cla_adder_add (
+  //         .a(rs1_data),
+  //         .b(rs2_data),
+  //         .cin(1'b0),
+  //         .sum(cla_sum)
+  //       );
+
 
   logic illegal_insn;
 
   always_comb begin
     illegal_insn = 1'b0;
-    rf_we = 1'b0; // Default to no write
-    rf_rd = 0; // 5'd0; // Default to register 0
-    rf_rd_data = 0; // 32'd0; // Default to 0
-    halt = 1'b0; // Default to no halt
-    pcNext = pcCurrent + 4; // Default to current PC
+    rf_we = 1'b0;  // Default to no write
+    rf_rd = 0;  // 5'd0; // Default to register 0
+    rf_rd_data = 0;  // 32'd0; // Default to 0
+    halt = 1'b0;  // Default to no halt
+    pcNext = pcCurrent + 4;  // Default to current PC
     // cla_sum = 0; // Default to 0
-          
+
 
     case (insn_opcode)
       OpLui: begin
@@ -516,6 +519,46 @@ cla cla_adder (
           illegal_insn = 1'b1;
         end
       end
+
+      // Opload Case - Adam implemeted function 1
+      OpLoad: begin
+        addr_to_dmem = rs1_data + imm_i_sext;
+        case (insn_funct3)
+          3'b000: begin  // `lb`
+            rf_rd_data = {{24{load_data_from_dmem[7]}}, load_data_from_dmem[7:0]};  // Sign-extend
+            rf_we = 1'b1;
+            rf_rd = insn_rd;
+          end
+
+          3'b001: begin  // 'lh'
+            rf_rd_data = {{16{load_data_from_dmem[15]}}, load_data_from_dmem[15:0]};  // Sign-extend
+            rf_we = 1'b1;
+            rf_rd = insn_rd;
+          end
+
+          3'b010: begin  // 'lw'
+            rf_rd_data = load_data_from_dmem;
+            rf_we = 1'b1;
+            rf_rd = insn_rd;
+          end
+
+          3'b100: begin  // 'lbu'
+            rf_rd_data = {24'd0, load_data_from_dmem[7:0]};  // Zero-extend byte
+            rf_we = 1'b1;
+            rf_rd = insn_rd;
+          end
+
+          3'b101: begin  // 'lhu'
+            rf_rd_data = {16'd0, load_data_from_dmem[15:0]};  // Zero-extend halfword
+            rf_we = 1'b1;
+            rf_rd = insn_rd;
+
+          end
+
+        endcase
+
+      end
+
       default: begin
         illegal_insn = 1'b1;
       end
@@ -641,16 +684,16 @@ module Processor (
   MemorySingleCycle #(
       .NUM_WORDS(8192)
   ) memory (
-      .rst      (rst),
-      .clock_mem (clock_mem),
+      .rst                (rst),
+      .clock_mem          (clock_mem),
       // imem is read-only
-      .pc_to_imem(pc_to_imem),
-      .insn_from_imem(insn_from_imem),
+      .pc_to_imem         (pc_to_imem),
+      .insn_from_imem     (insn_from_imem),
       // dmem is read-write
-      .addr_to_dmem(mem_data_addr),
+      .addr_to_dmem       (mem_data_addr),
       .load_data_from_dmem(mem_data_loaded_value),
       .store_data_to_dmem (mem_data_to_write),
-      .store_we_to_dmem  (mem_data_we)
+      .store_we_to_dmem   (mem_data_we)
   );
 
   DatapathSingleCycle datapath (
