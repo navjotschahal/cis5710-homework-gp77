@@ -364,108 +364,150 @@ module DatapathSingleCycle (
         endcase
       end
       OpRegReg: begin
-        case (insn_funct3)
-          3'b000: begin
-            if (insn_from_imem[31:25] == 7'd0) begin
-              // Implementing add using CLA adder
-              rf_we = 1'b1;
-              rf_rd = insn_rd;
-              // logic [`REG_SIZE] cla_sum;
-              // cla cla_adder (
-              // .a(rs1_data),
-              // .b(rs2_data),
-              // .cin(1'b0),
-              // .sum(cla_sum)
-              // );
-              rf_rd_data = cla_sum;
-            end else if (insn_from_imem[31:25] == 7'b0100000) begin
-              // Implementing sub
-              rf_we = 1'b1;
-              rf_rd = insn_rd;
-              rf_rd_data = cla_sum;
-            end else begin
+        if (insn_mul) begin
+          // mul rd,rs1,rs2: rd = (rs1 * rs2)[31:0]
+          // Use signed multiplication; for lower bits the signed and unsigned product are equivalent.
+          logic signed [63:0] prod;
+          prod = $signed(rs1_data) * $signed(rs2_data);
+          rf_we = 1'b1;
+          rf_rd = insn_rd;
+          rf_rd_data = prod[31:0];
+          $display("MUL: rs1=%h, rs2=%h, prod=%h, rd=%d, rf_rd_data=%h", rs1_data, rs2_data, prod,
+                   insn_rd, rf_rd_data);
+        end else if (insn_mulh) begin
+          // mulh rd,rs1,rs2: rd = (signed(rs1) * signed(rs2))[63:32]
+          logic signed [63:0] prod;
+          prod = $signed(rs1_data) * $signed(rs2_data);
+          rf_we = 1'b1;
+          rf_rd = insn_rd;
+          rf_rd_data = prod[63:32];
+          $display("MULH: rs1=%h, rs2=%h, prod=%h, rd=%d, rf_rd_data=%h", rs1_data, rs2_data, prod,
+                   insn_rd, rf_rd_data);
+        end else if (insn_mulhsu) begin
+          // mulhsu rd,rs1,rs2: rd = (signed(rs1) * unsign(rs2))[63:32]
+          // Multiply with first operand as signed and second as unsigned.
+          logic signed [63:0] prod;
+          prod = $signed(rs1_data) * rs2_data;
+          rf_we = 1'b1;
+          rf_rd = insn_rd;
+          rf_rd_data = prod[63:32];
+          $display("MULHSU: rs1=%h, rs2=%h, prod=%h, rd=%d, rf_rd_data=%h", rs1_data, rs2_data,
+                   prod, insn_rd, rf_rd_data);
+        end else if (insn_mulhu) begin
+          // mulhu rd,rs1,rs2: rd = (unsign(rs1) * unsign(rs2))[63:32]
+          logic [63:0] prod;
+          prod = rs1_data * rs2_data;
+          rf_we = 1'b1;
+          rf_rd = insn_rd;
+          rf_rd_data = prod[63:32];
+          $display("MULHU: rs1=%h, rs2=%h, prod=%h, rd=%d, rf_rd_data=%h", rs1_data, rs2_data,
+                   prod, insn_rd, rf_rd_data);
+        end else begin
+
+          // rest of functions should go below here
+          case (insn_funct3)
+            3'b000: begin
+              if (insn_from_imem[31:25] == 7'd0) begin
+                // Implementing add using CLA adder
+                rf_we = 1'b1;
+                rf_rd = insn_rd;
+                // logic [`REG_SIZE] cla_sum;
+                // cla cla_adder (
+                // .a(rs1_data),
+                // .b(rs2_data),
+                // .cin(1'b0),
+                // .sum(cla_sum)
+                // );
+                rf_rd_data = cla_sum;
+              end else if (insn_from_imem[31:25] == 7'b0100000) begin
+                // Implementing sub
+                rf_we = 1'b1;
+                rf_rd = insn_rd;
+                rf_rd_data = cla_sum;
+              end else begin
+                illegal_insn = 1'b1;
+              end
+            end
+            3'b001: begin
+              // Implementing sll
+              if (insn_from_imem[31:25] == 7'd0) begin
+                rf_we = 1'b1;
+                rf_rd = insn_rd;
+                rf_rd_data = rs1_data << rs2_data[4:0];
+              end else begin
+                illegal_insn = 1'b1;
+              end
+            end
+            3'b010: begin
+              // Implementing slt
+              if (insn_from_imem[31:25] == 7'd0) begin
+                rf_we = 1'b1;
+                rf_rd = insn_rd;
+                rf_rd_data = ($signed(rs1_data) < $signed(rs2_data)) ? 32'd1 : 32'd0;
+              end else begin
+                illegal_insn = 1'b1;
+              end
+            end
+            3'b011: begin
+              // Implementing sltu
+              if (insn_from_imem[31:25] == 7'd0) begin
+                rf_we = 1'b1;
+                rf_rd = insn_rd;
+                rf_rd_data = (rs1_data < rs2_data) ? 32'd1 : 32'd0;
+              end else begin
+                illegal_insn = 1'b1;
+              end
+            end
+            3'b100: begin
+              // Implementing xor
+              if (insn_from_imem[31:25] == 7'd0) begin
+                rf_we = 1'b1;
+                rf_rd = insn_rd;
+                rf_rd_data = rs1_data ^ rs2_data;
+              end else begin
+                illegal_insn = 1'b1;
+              end
+            end
+            3'b101: begin
+              if (insn_from_imem[31:25] == 7'd0) begin
+                // Implementing srl
+                rf_we = 1'b1;
+                rf_rd = insn_rd;
+                rf_rd_data = rs1_data >> rs2_data[4:0];
+              end else if (insn_from_imem[31:25] == 7'b0100000) begin
+                // Implementing sra
+                rf_we = 1'b1;
+                rf_rd = insn_rd;
+                rf_rd_data = $signed(rs1_data) >>> rs2_data[4:0];
+              end else begin
+                illegal_insn = 1'b1;
+              end
+            end
+            3'b110: begin
+              // Implementing or
+              if (insn_from_imem[31:25] == 7'd0) begin
+                rf_we = 1'b1;
+                rf_rd = insn_rd;
+                rf_rd_data = rs1_data | rs2_data;
+              end else begin
+                illegal_insn = 1'b1;
+              end
+            end
+            3'b111: begin
+              // Implementing and
+              if (insn_from_imem[31:25] == 7'd0) begin
+                rf_we = 1'b1;
+                rf_rd = insn_rd;
+                rf_rd_data = rs1_data & rs2_data;
+              end else begin
+                illegal_insn = 1'b1;
+              end
+            end
+            default: begin
               illegal_insn = 1'b1;
             end
-          end
-          3'b001: begin
-            // Implementing sll
-            if (insn_from_imem[31:25] == 7'd0) begin
-              rf_we = 1'b1;
-              rf_rd = insn_rd;
-              rf_rd_data = rs1_data << rs2_data[4:0];
-            end else begin
-              illegal_insn = 1'b1;
-            end
-          end
-          3'b010: begin
-            // Implementing slt
-            if (insn_from_imem[31:25] == 7'd0) begin
-              rf_we = 1'b1;
-              rf_rd = insn_rd;
-              rf_rd_data = ($signed(rs1_data) < $signed(rs2_data)) ? 32'd1 : 32'd0;
-            end else begin
-              illegal_insn = 1'b1;
-            end
-          end
-          3'b011: begin
-            // Implementing sltu
-            if (insn_from_imem[31:25] == 7'd0) begin
-              rf_we = 1'b1;
-              rf_rd = insn_rd;
-              rf_rd_data = (rs1_data < rs2_data) ? 32'd1 : 32'd0;
-            end else begin
-              illegal_insn = 1'b1;
-            end
-          end
-          3'b100: begin
-            // Implementing xor
-            if (insn_from_imem[31:25] == 7'd0) begin
-              rf_we = 1'b1;
-              rf_rd = insn_rd;
-              rf_rd_data = rs1_data ^ rs2_data;
-            end else begin
-              illegal_insn = 1'b1;
-            end
-          end
-          3'b101: begin
-            if (insn_from_imem[31:25] == 7'd0) begin
-              // Implementing srl
-              rf_we = 1'b1;
-              rf_rd = insn_rd;
-              rf_rd_data = rs1_data >> rs2_data[4:0];
-            end else if (insn_from_imem[31:25] == 7'b0100000) begin
-              // Implementing sra
-              rf_we = 1'b1;
-              rf_rd = insn_rd;
-              rf_rd_data = $signed(rs1_data) >>> rs2_data[4:0];
-            end else begin
-              illegal_insn = 1'b1;
-            end
-          end
-          3'b110: begin
-            // Implementing or
-            if (insn_from_imem[31:25] == 7'd0) begin
-              rf_we = 1'b1;
-              rf_rd = insn_rd;
-              rf_rd_data = rs1_data | rs2_data;
-            end else begin
-              illegal_insn = 1'b1;
-            end
-          end
-          3'b111: begin
-            // Implementing and
-            if (insn_from_imem[31:25] == 7'd0) begin
-              rf_we = 1'b1;
-              rf_rd = insn_rd;
-              rf_rd_data = rs1_data & rs2_data;
-            end else begin
-              illegal_insn = 1'b1;
-            end
-          end
-          default: begin
-            illegal_insn = 1'b1;
-          end
-        endcase
+          endcase
+        end
       end
       OpBranch: begin
         case (insn_funct3)
@@ -690,6 +732,8 @@ module DatapathSingleCycle (
         $display("JALR: pcCurrent=%h, pcNext=%h, rs1_data=%h, imm_i_sext=%h, rd=%d, rf_rd_data=%h",
                  pcCurrent, pcNext, rs1_data, imm_i_sext, insn_rd, rf_rd_data);
       end
+
+
 
 
 
