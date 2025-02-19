@@ -526,46 +526,43 @@ module DatapathSingleCycle (
       ////////////////////////////////////////////////
       // Opload Case - Adam implemeted function 1
       OpLoad: begin
+        // Compute effective address for load: rs1 + sign-extended immediate.
         addr_to_dmem = rs1_data + imm_i_sext;
         case (insn_funct3)
-          3'b000: begin  // `lb`
-            rf_rd_data = {{24{load_data_from_dmem[7]}}, load_data_from_dmem[7:0]};  // Sign-extend
+          3'b000: begin  // lb: load byte and sign-extend
+            rf_rd_data = {{24{load_data_from_dmem[7]}}, load_data_from_dmem[7:0]};
+            rf_we = 1'b1;
+            rf_rd = insn_rd;
+            $display("LB: addr=%h, load_data=%h, rf_rd_data=%h, rd=%d", addr_to_dmem,
+                     load_data_from_dmem, rf_rd_data, insn_rd);
+          end
+          3'b001: begin  // lh: load halfword (sign-extended)
+            rf_rd_data = {{16{load_data_from_dmem[15]}}, load_data_from_dmem[15:0]};
             rf_we = 1'b1;
             rf_rd = insn_rd;
           end
-
-          3'b001: begin  // 'lh'
-            rf_rd_data = {{16{load_data_from_dmem[15]}}, load_data_from_dmem[15:0]};  // Sign-extend
-            rf_we = 1'b1;
-            rf_rd = insn_rd;
-          end
-
-          3'b010: begin  // 'lw'
+          3'b010: begin  // lw: load word
             rf_rd_data = load_data_from_dmem;
             rf_we = 1'b1;
             rf_rd = insn_rd;
           end
-
-          3'b100: begin  // 'lbu'
-            rf_rd_data = {24'd0, load_data_from_dmem[7:0]};  // Zero-extend byte
+          3'b100: begin  // lbu: load byte, zero-extended
+            rf_rd_data = {24'd0, load_data_from_dmem[7:0]};
             rf_we = 1'b1;
             rf_rd = insn_rd;
           end
-
-          3'b101: begin  // 'lhu'
-            rf_rd_data = {16'd0, load_data_from_dmem[15:0]};  // Zero-extend halfword
+          3'b101: begin  // lhu: load halfword, zero-extended
+            rf_rd_data = {16'd0, load_data_from_dmem[15:0]};
             rf_we = 1'b1;
             rf_rd = insn_rd;
-
           end
-
           default: begin
             illegal_insn = 1'b1;
           end
-
         endcase
-
       end
+
+
 
       OpStore: begin
         logic [`REG_SIZE] addr_temp;
@@ -625,6 +622,18 @@ module DatapathSingleCycle (
         $display("JAL: pcCurrent=%h, pcNext=%h, jal_offset=%h, rd=%d, rf_rd_data=%h", pcCurrent,
                  pcNext, jal_offset, rd_jal, rf_rd_data);
       end
+
+      OpJalr: begin
+        // Implementing JALR: rd = pcCurrent + 4; pcNext = (rs1_data + imm_i_sext) & ~1
+        rf_we = (insn_rd != 5'd0);  // Write to rd if not x0
+        rf_rd = insn_rd;
+        rf_rd_data = pcCurrent + 4;
+        // Compute the new PC: add rs1_data and the immediate then clear the LSB
+        pcNext = (rs1_data + imm_i_sext) & ~32'd1;
+        $display("JALR: pcCurrent=%h, pcNext=%h, rs1_data=%h, imm_i_sext=%h, rd=%d, rf_rd_data=%h",
+                 pcCurrent, pcNext, rs1_data, imm_i_sext, insn_rd, rf_rd_data);
+      end
+
 
 
 
