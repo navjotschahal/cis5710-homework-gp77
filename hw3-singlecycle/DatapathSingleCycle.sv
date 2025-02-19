@@ -526,41 +526,73 @@ module DatapathSingleCycle (
       ////////////////////////////////////////////////
       // Opload Case - Adam implemeted function 1
       OpLoad: begin
-        // Compute effective address for load: rs1 + sign-extended immediate.
-        addr_to_dmem = rs1_data + imm_i_sext;
+        // For all load instructions, compute effective address first.
+        // (For lb/lh/lw, this is rs1_data + imm_i_sext.)
+        // We'll use a temporary variable for clarity.
+        logic [`REG_SIZE] effective_addr;
+        effective_addr = rs1_data + imm_i_sext;
+
+        // For memory access, force the address to be word-aligned.
+        addr_to_dmem   = {effective_addr[31:2], 2'b00};
+
         case (insn_funct3)
           3'b000: begin  // lb: load byte and sign-extend
-            rf_rd_data = {{24{load_data_from_dmem[7]}}, load_data_from_dmem[7:0]};
+            // Select the correct byte based on effective_addr[1:0]
+            case (effective_addr[1:0])
+              2'b00:   rf_rd_data = {{24{load_data_from_dmem[7]}}, load_data_from_dmem[7:0]};
+              2'b01:   rf_rd_data = {{24{load_data_from_dmem[15]}}, load_data_from_dmem[15:8]};
+              2'b10:   rf_rd_data = {{24{load_data_from_dmem[23]}}, load_data_from_dmem[23:16]};
+              2'b11:   rf_rd_data = {{24{load_data_from_dmem[31]}}, load_data_from_dmem[31:24]};
+              default: rf_rd_data = 32'd0;  // should never occur
+            endcase
             rf_we = 1'b1;
             rf_rd = insn_rd;
-            $display("LB: addr=%h, load_data=%h, rf_rd_data=%h, rd=%d", addr_to_dmem,
-                     load_data_from_dmem, rf_rd_data, insn_rd);
+            $display("LB: effective_addr=%h, addr_to_dmem=%h, load_data=%h, rf_rd_data=%h, rd=%d",
+                     effective_addr, addr_to_dmem, load_data_from_dmem, rf_rd_data, insn_rd);
           end
+
           3'b001: begin  // lh: load halfword (sign-extended)
+            // (Similar changes are needed here if your test eventually uses lh.)
+            addr_to_dmem = {effective_addr[31:2], 2'b00};
+            // For LH, you would extract the halfword based on effective_addr[1]
+            // and sign-extend appropriately.
             rf_rd_data = {{16{load_data_from_dmem[15]}}, load_data_from_dmem[15:0]};
             rf_we = 1'b1;
             rf_rd = insn_rd;
           end
-          3'b010: begin  // lw: load word
+
+          3'b010: begin  // lw: load word (address is already forced word-aligned)
+            addr_to_dmem = effective_addr;  // should be word-aligned by design
             rf_rd_data = load_data_from_dmem;
             rf_we = 1'b1;
             rf_rd = insn_rd;
           end
+
           3'b100: begin  // lbu: load byte, zero-extended
-            rf_rd_data = {24'd0, load_data_from_dmem[7:0]};
+            case (effective_addr[1:0])
+              2'b00:   rf_rd_data = {24'd0, load_data_from_dmem[7:0]};
+              2'b01:   rf_rd_data = {24'd0, load_data_from_dmem[15:8]};
+              2'b10:   rf_rd_data = {24'd0, load_data_from_dmem[23:16]};
+              2'b11:   rf_rd_data = {24'd0, load_data_from_dmem[31:24]};
+              default: rf_rd_data = 32'd0;
+            endcase
             rf_we = 1'b1;
             rf_rd = insn_rd;
           end
+
           3'b101: begin  // lhu: load halfword, zero-extended
+            // (Again, similar logic would apply for halfwords.)
             rf_rd_data = {16'd0, load_data_from_dmem[15:0]};
             rf_we = 1'b1;
             rf_rd = insn_rd;
           end
+
           default: begin
             illegal_insn = 1'b1;
           end
         endcase
       end
+
 
 
 
