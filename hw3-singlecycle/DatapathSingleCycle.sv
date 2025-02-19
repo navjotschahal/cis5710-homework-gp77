@@ -288,12 +288,12 @@ module DatapathSingleCycle (
         rf_rd = insn_rd;
         rf_rd_data = {insn_from_imem[31:12], 12'b0};
       end
-      // OpAuipc: begin
-      //   // Implementing auipc
-      //   rf_we = 1'b1;
-      //   rf_rd = insn_rd;
-      //   rf_rd_data = pcCurrent + {insn_from_imem[31:12], 12'b0};
-      // end
+      OpAuipc: begin
+        // Implementing auipc
+        rf_we = 1'b1;
+        rf_rd = insn_rd;
+        rf_rd_data = pcCurrent + {insn_from_imem[31:12], 12'b0};
+      end
       OpRegImm: begin
         case (insn_funct3)
           3'b000: begin
@@ -599,26 +599,31 @@ module DatapathSingleCycle (
 
       OpJal: begin
         logic [`REG_SIZE] jal_offset;
+        logic [4:0] rd_jal;  // Temporary variable for correct JAL rd extraction
 
-        // Extract immediate correctly
+        // ✅ Correct sign-extended immediate extraction
         jal_offset = {
-          {11{insn_from_imem[31]}},
-          insn_from_imem[31],
-          insn_from_imem[19:12],
-          insn_from_imem[20],
-          insn_from_imem[30:21],
-          1'b0
+          {12{insn_from_imem[31]}},  // Sign-extend
+          insn_from_imem[19:12],  // Bits 19:12
+          insn_from_imem[20],  // Bit 20
+          insn_from_imem[30:21],  // Bits 30:21
+          1'b0  // Least significant bit 0
         };
 
-        // Save return address to destination register
-        if (insn_rd != 5'b00000) begin
-          rf_rd      = insn_rd;
-          rf_rd_data = pcCurrent + 4;  // Return address = PC + 4
-          rf_we      = 1'b1;
-        end
+        // ✅ Correct `rd` extraction for JAL (bits [11:7])
+        rd_jal = insn_from_imem[11:7];
 
-        // Update program counter
+        // ✅ Ensure we are not writing to x0
+        rf_we = (rd_jal != 5'd0);  // Enable write only if rd ≠ x0
+        rf_rd = rd_jal;  // ✅ Store correct destination register
+        rf_rd_data = pcCurrent + 4;  // ✅ Correct return address
+
+        // ✅ Correct PC update for JAL
         pcNext = pcCurrent + jal_offset;
+
+        // Debugging output (for waveforms)
+        $display("JAL: pcCurrent=%h, pcNext=%h, jal_offset=%h, rd=%d, rf_rd_data=%h", pcCurrent,
+                 pcNext, jal_offset, rd_jal, rf_rd_data);
       end
 
 
