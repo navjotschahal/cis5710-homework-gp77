@@ -617,10 +617,26 @@ module DatapathSingleCycle (
           end
 
           3'b001: begin  // sh - store halfword (16-bit)
-            addr_to_dmem = {addr_temp[31:1], 1'b0};  // Force halfword alignment
-            store_we_to_dmem = 4'b0011 << (addr_temp[1] ? 2 : 0);
-            store_data_to_dmem = {2{rs2_data[15:0]}};  // Replicate halfword
+            // Compute effective address for store.
+            // We force word alignment by taking the upper 30 bits and appending 2'b00.
+            addr_to_dmem = {addr_temp[31:2], 2'b00};
+            // Use the lower two bits of addr_temp to determine which halfword should be written.
+            // For a properly aligned halfword, addr_temp[1:0] should be either 00 or 10.
+            // If it is 00, write to lower half (store enable 4'b0011).
+            // If it is 10, write to upper half (store enable 4'b1100).
+            case (addr_temp[1:0])
+              2'b00: store_we_to_dmem = 4'b0011;
+              2'b10: store_we_to_dmem = 4'b1100;
+              default: begin
+                // This should not occur for a valid halfword-aligned address.
+                store_we_to_dmem = 4'b0000;
+                illegal_insn = 1'b1;
+              end
+            endcase
+            // Replicate the 16-bit value across the two halfwords.
+            store_data_to_dmem = {2{rs2_data[15:0]}};
           end
+
 
           3'b010: begin  // sw - store word (32-bit)
             addr_to_dmem = {addr_temp[31:2], 2'b00};  // Force word alignment
