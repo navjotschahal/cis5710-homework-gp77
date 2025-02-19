@@ -565,43 +565,35 @@ module DatapathSingleCycle (
       end
 
       OpStore: begin
-        addr_to_dmem = rs1_data + imm_s_sext;  // Compute the memory address
+        logic [`REG_SIZE] addr_temp;
+        addr_temp = rs1_data + imm_s_sext;  // Store the computed address
 
         case (insn_funct3)
-          3'b000: begin  // sb
-            store_we_to_dmem   = 4'b0001 << addr_to_dmem[1:0];  // Enable correct byte
-            store_data_to_dmem = {4{rs2_data[7:0]}};  // Broadcast byte
+          3'b000: begin  // sb - store byte (8-bit)
+            addr_to_dmem = addr_temp;  // Byte-aligned, no need to adjust
+            store_we_to_dmem = 4'b0001 << addr_temp[1:0];  // Enable only one byte
+            store_data_to_dmem = {4{rs2_data[7:0]}};  // Replicate byte
           end
 
           3'b001: begin  // sh - store halfword (16-bit)
-            addr_to_dmem = rs1_data + imm_s_sext;  // Compute memory address
-            store_we_to_dmem = 4'b0011 << addr_to_dmem[1:0];  // Enable correct two bytes
-
-            // Align the 16-bit value correctly within 32-bit store_data_to_dmem
-            case (addr_to_dmem[1:0])
-              2'b00:   store_data_to_dmem = {16'd0, rs2_data[15:0]};  // Bytes 0-1
-              2'b01:   store_data_to_dmem = {8'd0, rs2_data[15:0], 8'd0};  // Bytes 1-2
-              2'b10:   store_data_to_dmem = {rs2_data[15:0], 16'd0};  // Bytes 2-3
-              default: store_data_to_dmem = 32'd0;  // Prevent latch inference
-            endcase
+            addr_to_dmem = {addr_temp[31:1], 1'b0};  // Force halfword alignment
+            store_we_to_dmem = 4'b0011 << (addr_temp[1] ? 2 : 0);
+            store_data_to_dmem = {2{rs2_data[15:0]}};  // Replicate halfword
           end
 
           3'b010: begin  // sw - store word (32-bit)
-            addr_to_dmem = rs1_data + imm_s_sext;  // Compute memory address
+            addr_to_dmem = {addr_temp[31:2], 2'b00};  // Force word alignment
             store_we_to_dmem = 4'b1111;  // Enable all four bytes
-            store_data_to_dmem = rs2_data;  // Store entire 32-bit word
+            store_data_to_dmem = rs2_data;  // Store entire word
           end
 
           default: begin
             illegal_insn = 1'b1;
           end
-
-
-
         endcase
 
-
       end
+
 
       default: begin
         illegal_insn = 1'b1;
