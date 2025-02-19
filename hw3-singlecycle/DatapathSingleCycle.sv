@@ -365,38 +365,36 @@ module DatapathSingleCycle (
       end
       OpRegReg: begin
         if (insn_mul) begin
-          // mul rd,rs1,rs2: rd = (rs1 * rs2)[31:0]
-          // Use signed multiplication; for lower bits the signed and unsigned product are equivalent.
+          // MUL: rd = (rs1 * rs2)[31:0]
           logic signed [63:0] prod;
-          prod = $signed(rs1_data) * $signed(rs2_data);
+          prod = $signed({{32{rs1_data[31]}}, rs1_data}) * $signed({{32{rs2_data[31]}}, rs2_data});
           rf_we = 1'b1;
           rf_rd = insn_rd;
           rf_rd_data = prod[31:0];
           $display("MUL: rs1=%h, rs2=%h, prod=%h, rd=%d, rf_rd_data=%h", rs1_data, rs2_data, prod,
                    insn_rd, rf_rd_data);
         end else if (insn_mulh) begin
-          // mulh rd,rs1,rs2: rd = (signed(rs1) * signed(rs2))[63:32]
+          // MULH: rd = (signed(rs1) * signed(rs2))[63:32]
           logic signed [63:0] prod;
-          prod = $signed(rs1_data) * $signed(rs2_data);
+          prod = $signed({{32{rs1_data[31]}}, rs1_data}) * $signed({{32{rs2_data[31]}}, rs2_data});
           rf_we = 1'b1;
           rf_rd = insn_rd;
           rf_rd_data = prod[63:32];
           $display("MULH: rs1=%h, rs2=%h, prod=%h, rd=%d, rf_rd_data=%h", rs1_data, rs2_data, prod,
                    insn_rd, rf_rd_data);
         end else if (insn_mulhsu) begin
-          // mulhsu rd,rs1,rs2: rd = (signed(rs1) * unsign(rs2))[63:32]
-          // Multiply with first operand as signed and second as unsigned.
+          // MULHSU: rd = (signed(rs1) * unsigned(rs2))[63:32]
           logic signed [63:0] prod;
-          prod = $signed(rs1_data) * rs2_data;
+          prod = $signed({{32{rs1_data[31]}}, rs1_data}) * $unsigned({32'b0, rs2_data});
           rf_we = 1'b1;
           rf_rd = insn_rd;
           rf_rd_data = prod[63:32];
           $display("MULHSU: rs1=%h, rs2=%h, prod=%h, rd=%d, rf_rd_data=%h", rs1_data, rs2_data,
                    prod, insn_rd, rf_rd_data);
         end else if (insn_mulhu) begin
-          // mulhu rd,rs1,rs2: rd = (unsign(rs1) * unsign(rs2))[63:32]
+          // MULHU: rd = (unsigned(rs1) * unsigned(rs2))[63:32]
           logic [63:0] prod;
-          prod = rs1_data * rs2_data;
+          prod = {32'b0, rs1_data} * {32'b0, rs2_data};
           rf_we = 1'b1;
           rf_rd = insn_rd;
           rf_rd_data = prod[63:32];
