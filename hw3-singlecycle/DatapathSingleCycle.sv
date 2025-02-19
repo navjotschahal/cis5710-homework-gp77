@@ -267,6 +267,36 @@ module DatapathSingleCycle (
   //         .sum(cla_sum)
   //       );
 
+  // For the unsigned division instructions (divu and remu)
+  logic [31:0] div_dividend, div_divisor;
+  always_comb begin
+    case (1'b1)
+      insn_divu, insn_remu: begin
+        // For these instructions, we use the register file values.
+        div_dividend = rs1_data;
+        div_divisor  = rs2_data;
+      end
+      default: begin
+        div_dividend = 32'd0;
+        div_divisor  = 32'd0;
+      end
+    endcase
+  end
+
+
+  // Wires for the unsigned divider outputs.
+  wire [31:0] divu_quotient;
+  wire [31:0] divu_remainder;
+
+  // Instantiate the provided unsigned divider.
+  divider_unsigned u_divider (
+      .i_dividend (rs1_data),
+      .i_divisor  (rs2_data),
+      .o_quotient (divu_quotient),
+      .o_remainder(divu_remainder)
+  );
+
+
 
   logic illegal_insn;
 
@@ -400,6 +430,56 @@ module DatapathSingleCycle (
           rf_rd_data = prod[63:32];
           $display("MULHU: rs1=%h, rs2=%h, prod=%h, rd=%d, rf_rd_data=%h", rs1_data, rs2_data,
                    prod, insn_rd, rf_rd_data);
+
+        end else if (insn_div) begin
+          // DIV: rd = rs1 / signed(rs2)
+          if (rs2_data == 32'd0) begin
+            rf_rd_data = 32'hFFFFFFFF;  // Division by zero yields -1.
+          end else if ((rs1_data == 32'h80000000) && (rs2_data == 32'hFFFFFFFF)) begin
+            // Special case: MIN_INT / -1
+            rf_rd_data = 32'h80000000;
+          end else begin
+            rf_rd_data = $signed(rs1_data) / $signed(rs2_data);
+          end
+          rf_we = 1'b1;
+          rf_rd = insn_rd;
+          $display("DIV: rs1=%h, rs2=%h, result=%h, rd=%d", rs1_data, rs2_data, rf_rd_data,
+                   insn_rd);
+        end else if (insn_divu) begin
+          // DIVU: rd = rs1 / unsign(rs2) using the divider module.
+          if (rs2_data == 32'd0) begin
+            rf_rd_data = 32'hFFFFFFFF;
+          end else begin
+            rf_rd_data = divu_quotient;
+          end
+          rf_we = 1'b1;
+          rf_rd = insn_rd;
+          $display("DIVU: rs1=%h, rs2=%h, quotient=%h, rd=%d", rs1_data, rs2_data, rf_rd_data,
+                   insn_rd);
+        end else if (insn_rem) begin
+          // REM: rd = rs1 % signed(rs2)
+          if (rs2_data == 32'd0) begin
+            rf_rd_data = rs1_data;
+          end else if ((rs1_data == 32'h80000000) && (rs2_data == 32'hFFFFFFFF)) begin
+            rf_rd_data = 32'd0;
+          end else begin
+            rf_rd_data = $signed(rs1_data) % $signed(rs2_data);
+          end
+          rf_we = 1'b1;
+          rf_rd = insn_rd;
+          $display("REM: rs1=%h, rs2=%h, remainder=%h, rd=%d", rs1_data, rs2_data, rf_rd_data,
+                   insn_rd);
+        end else if (insn_remu) begin
+          // REMU: rd = rs1 % unsign(rs2) using the divider module.
+          if (rs2_data == 32'd0) begin
+            rf_rd_data = rs1_data;
+          end else begin
+            rf_rd_data = divu_remainder;
+          end
+          rf_we = 1'b1;
+          rf_rd = insn_rd;
+          $display("REMU: rs1=%h, rs2=%h, remainder=%h, rd=%d", rs1_data, rs2_data, rf_rd_data,
+                   insn_rd);
         end else begin
 
           // rest of functions should go below here
