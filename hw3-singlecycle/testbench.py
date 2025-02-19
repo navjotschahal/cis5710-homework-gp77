@@ -302,9 +302,9 @@ async def dhrystone(dut):
         pass
     raise SimTimeoutError()
 
-#RISCV_TESTS_PATH = Path('../riscv-tests/isa')
+RISCV_TESTS_PATH = Path('./riscv-tests/isa')
 
-#assert cu.RISCV_TESTS_PATH.relative_to('.').exists(), f"Couldn't read riscv-tests from {cu.RISCV_TESTS_PATH}"
+# assert cu.RISCV_TESTS_PATH.relative_to('.').exists(), f"Couldn't read riscv-tests from {cu.RISCV_TESTS_PATH}"
 RV_TEST_BINARIES = [
     cu.RISCV_TESTS_PATH / 'rv32ui-p-simple', # 1
     cu.RISCV_TESTS_PATH / 'rv32ui-p-lui',
@@ -337,6 +337,8 @@ RV_TEST_BINARIES = [
     cu.RISCV_TESTS_PATH / 'rv32ui-p-bltu',
     cu.RISCV_TESTS_PATH / 'rv32ui-p-bne',
 
+
+    # tests up to here should pass 
     cu.RISCV_TESTS_PATH / 'rv32ui-p-jal', # 28
     cu.RISCV_TESTS_PATH / 'rv32ui-p-jalr',
     cu.RISCV_TESTS_PATH / 'rv32ui-p-auipc', # needs JAL

@@ -521,6 +521,9 @@ module DatapathSingleCycle (
         end
       end
 
+
+
+      ////////////////////////////////////////////////
       // Opload Case - Adam implemeted function 1
       OpLoad: begin
         addr_to_dmem = rs1_data + imm_i_sext;
@@ -570,7 +573,7 @@ module DatapathSingleCycle (
 
         case (insn_funct3)
           3'b000: begin  // sb - store byte (8-bit)
-            addr_to_dmem = addr_temp;  // Byte-aligned, no need to adjust
+            addr_to_dmem = {addr_temp[31:2], 2'b00};  // Force word alignment
             store_we_to_dmem = 4'b0001 << addr_temp[1:0];  // Enable only one byte
             store_data_to_dmem = {4{rs2_data[7:0]}};  // Replicate byte
           end
@@ -593,6 +596,31 @@ module DatapathSingleCycle (
         endcase
 
       end
+
+      OpJal: begin
+        logic [`REG_SIZE] jal_offset;
+
+        // Extract immediate correctly
+        jal_offset = {
+          {11{insn_from_imem[31]}},
+          insn_from_imem[31],
+          insn_from_imem[19:12],
+          insn_from_imem[20],
+          insn_from_imem[30:21],
+          1'b0
+        };
+
+        // Save return address to destination register
+        if (insn_rd != 5'b00000) begin
+          rf_rd      = insn_rd;
+          rf_rd_data = pcCurrent + 4;  // Return address = PC + 4
+          rf_we      = 1'b1;
+        end
+
+        // Update program counter
+        pcNext = pcCurrent + jal_offset;
+      end
+
 
 
       default: begin
