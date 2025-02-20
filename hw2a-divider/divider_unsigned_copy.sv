@@ -35,20 +35,21 @@ module divider_unsigned (
         end
     endgenerate
 
-        assign o_quotient = temp_quotient[32];
+        assign
+         o_quotient = temp_quotient[32];
         assign o_remainder = temp_remainder[32];
 
 endmodule
 
 
 module divu_1iter (
-    input  wire [31:0] i_dividend,
-    input  wire [31:0] i_divisor,
-    input  wire [31:0] i_remainder,
-    input  wire [31:0] i_quotient,
-    output wire [31:0] o_dividend,
-    output wire [31:0] o_remainder,
-    output wire [31:0] o_quotient
+    input  logic [31:0] i_dividend,
+    input  logic [31:0] i_divisor,
+    input  logic [31:0] i_remainder,
+    input  logic [31:0] i_quotient,
+    output logic [31:0] o_dividend,
+    output logic [31:0] o_remainder,
+    output logic [31:0] o_quotient
 );
   /*
     for (int i = 0; i < 32; i++) {
@@ -69,18 +70,18 @@ module divu_1iter (
     logic [31:0] temp_dividend;
 
     always_comb begin
-        temp_remainder = (i_remainder << 1) | (i_dividend >> 31);
+        temp_remainder = (i_remainder << 1) | (i_dividend[31] ? 32'b1 : 32'b0);
         temp_dividend = i_dividend << 1;
-        if (temp_remainder < i_divisor) begin
-            temp_quotient = i_quotient << 1;
-        end else begin
+        if (temp_remainder >= i_divisor) begin
             temp_remainder = temp_remainder - i_divisor;
             temp_quotient = (i_quotient << 1) | 1;
+        end else begin
+            temp_quotient = i_quotient << 1;
         end
-    end
 
-    assign o_dividend = temp_dividend;
-    assign o_remainder = temp_remainder;
-    assign o_quotient = temp_quotient;
+        o_dividend = temp_dividend;
+        o_remainder = temp_remainder;
+        o_quotient = temp_quotient;
+    end
 
 endmodule
