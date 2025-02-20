@@ -25,7 +25,6 @@ module RegFile (
   logic [`REG_SIZE] regs[NumRegs];
 
   // TODO: your code here
-
   // Reset logic
   always_ff @(posedge clk) begin
     if (rst) begin
@@ -272,10 +271,10 @@ module DatapathSingleCycle (
   always_comb begin
     case (1'b1)
       insn_divu, insn_remu: begin
-        // For these instructions, we use the register file values.
         div_dividend = rs1_data;
         div_divisor  = rs2_data;
       end
+
       default: begin
         div_dividend = 32'd0;
         div_divisor  = 32'd0;
@@ -288,7 +287,7 @@ module DatapathSingleCycle (
   wire [31:0] divu_quotient;
   wire [31:0] divu_remainder;
 
-  // Instantiate the provided unsigned divider.
+  // Instantiate divider
   divider_unsigned u_divider (
       .i_dividend (rs1_data),
       .i_divisor  (rs2_data),
@@ -296,6 +295,17 @@ module DatapathSingleCycle (
       .o_remainder(divu_remainder)
   );
 
+  wire [31:0] signed_dividend = (rs1_data[31]) ? -rs1_data : rs1_data;
+  wire [31:0] signed_divisor = (rs2_data[31]) ? -rs2_data : rs2_data;
+  wire [31:0] s_div_quotient;
+  wire [31:0] s_div_remainder;
+
+  divider_unsigned u_signed_divider (
+      .i_dividend (signed_dividend),
+      .i_divisor  (signed_divisor),
+      .o_quotient (s_div_quotient),
+      .o_remainder(s_div_remainder)
+  );
 
 
   logic illegal_insn;
@@ -308,7 +318,6 @@ module DatapathSingleCycle (
     halt = 1'b0;  // Default to no halt
     pcNext = pcCurrent + 4;  // Default to current PC
     addr_to_dmem = 32'd0;
-    // cla_sum = 0; // Default to 0
 
 
     case (insn_opcode)
@@ -393,6 +402,7 @@ module DatapathSingleCycle (
           end
         endcase
       end
+
       OpRegReg: begin
         if (insn_mul) begin
           // MUL: rd = (rs1 * rs2)[31:0]
@@ -401,8 +411,6 @@ module DatapathSingleCycle (
           rf_we = 1'b1;
           rf_rd = insn_rd;
           rf_rd_data = prod[31:0];
-          $display("MUL: rs1=%h, rs2=%h, prod=%h, rd=%d, rf_rd_data=%h", rs1_data, rs2_data, prod,
-                   insn_rd, rf_rd_data);
         end else if (insn_mulh) begin
           // MULH: rd = (signed(rs1) * signed(rs2))[63:32]
           logic signed [63:0] prod;
@@ -410,8 +418,6 @@ module DatapathSingleCycle (
           rf_we = 1'b1;
           rf_rd = insn_rd;
           rf_rd_data = prod[63:32];
-          $display("MULH: rs1=%h, rs2=%h, prod=%h, rd=%d, rf_rd_data=%h", rs1_data, rs2_data, prod,
-                   insn_rd, rf_rd_data);
         end else if (insn_mulhsu) begin
           // MULHSU: rd = (signed(rs1) * unsigned(rs2))[63:32]
           logic signed [63:0] prod;
@@ -419,8 +425,6 @@ module DatapathSingleCycle (
           rf_we = 1'b1;
           rf_rd = insn_rd;
           rf_rd_data = prod[63:32];
-          $display("MULHSU: rs1=%h, rs2=%h, prod=%h, rd=%d, rf_rd_data=%h", rs1_data, rs2_data,
-                   prod, insn_rd, rf_rd_data);
         end else if (insn_mulhu) begin
           // MULHU: rd = (unsigned(rs1) * unsigned(rs2))[63:32]
           logic [63:0] prod;
@@ -428,23 +432,25 @@ module DatapathSingleCycle (
           rf_we = 1'b1;
           rf_rd = insn_rd;
           rf_rd_data = prod[63:32];
-          $display("MULHU: rs1=%h, rs2=%h, prod=%h, rd=%d, rf_rd_data=%h", rs1_data, rs2_data,
-                   prod, insn_rd, rf_rd_data);
-
         end else if (insn_div) begin
-          // DIV: rd = rs1 / signed(rs2)
+          // DIV: rd = rs1 / signed(rs2) using the divider module with sign adjustment.
           if (rs2_data == 32'd0) begin
             rf_rd_data = 32'hFFFFFFFF;  // Division by zero yields -1.
           end else if ((rs1_data == 32'h80000000) && (rs2_data == 32'hFFFFFFFF)) begin
-            // Special case: MIN_INT / -1
-            rf_rd_data = 32'h80000000;
+            rf_rd_data = 32'h80000000;  // Special case: MIN_INT / -1.
           end else begin
-            rf_rd_data = $signed(rs1_data) / $signed(rs2_data);
+            logic [31:0] abs_dividend;
+            logic [31:0] abs_divisor;
+            abs_dividend = (rs1_data[31]) ? ((~rs1_data) + 32'd1) : rs1_data;
+            abs_divisor = (rs2_data[31]) ? ((~rs2_data) + 32'd1) : rs2_data;
+            rf_rd_data = (rs1_data[31] ^ rs2_data[31])
+                         ? ((~s_div_quotient) + 32'd1)
+                         : s_div_quotient;
           end
           rf_we = 1'b1;
           rf_rd = insn_rd;
-          $display("DIV: rs1=%h, rs2=%h, result=%h, rd=%d", rs1_data, rs2_data, rf_rd_data,
-                   insn_rd);
+          // $display("DIV: rs1=%h, rs2=%h, result=%h, rd=%d", rs1_data, rs2_data, rf_rd_data,
+          //          insn_rd);
         end else if (insn_divu) begin
           // DIVU: rd = rs1 / unsign(rs2) using the divider module.
           if (rs2_data == 32'd0) begin
@@ -454,23 +460,24 @@ module DatapathSingleCycle (
           end
           rf_we = 1'b1;
           rf_rd = insn_rd;
-          $display("DIVU: rs1=%h, rs2=%h, quotient=%h, rd=%d", rs1_data, rs2_data, rf_rd_data,
-                   insn_rd);
         end else if (insn_rem) begin
-          // REM: rd = rs1 % signed(rs2)
+          // REM: rd = rs1 % signed(rs2) using the divider module with sign adjustment
           if (rs2_data == 32'd0) begin
             rf_rd_data = rs1_data;
           end else if ((rs1_data == 32'h80000000) && (rs2_data == 32'hFFFFFFFF)) begin
             rf_rd_data = 32'd0;
           end else begin
-            rf_rd_data = $signed(rs1_data) % $signed(rs2_data);
+            // The remainder takes the sign of the dividend.
+            logic [31:0] abs_dividend;
+            logic [31:0] abs_divisor;
+            abs_dividend = (rs1_data[31]) ? ((~rs1_data) + 32'd1) : rs1_data;
+            abs_divisor  = (rs2_data[31]) ? ((~rs2_data) + 32'd1) : rs2_data;
+            rf_rd_data   = (rs1_data[31]) ? ((~s_div_remainder) + 32'd1) : s_div_remainder;
           end
           rf_we = 1'b1;
           rf_rd = insn_rd;
-          $display("REM: rs1=%h, rs2=%h, remainder=%h, rd=%d", rs1_data, rs2_data, rf_rd_data,
-                   insn_rd);
         end else if (insn_remu) begin
-          // REMU: rd = rs1 % unsign(rs2) using the divider module.
+          // REMU: rd = rs1 % unsign(rs2)
           if (rs2_data == 32'd0) begin
             rf_rd_data = rs1_data;
           end else begin
@@ -478,27 +485,17 @@ module DatapathSingleCycle (
           end
           rf_we = 1'b1;
           rf_rd = insn_rd;
-          $display("REMU: rs1=%h, rs2=%h, remainder=%h, rd=%d", rs1_data, rs2_data, rf_rd_data,
-                   insn_rd);
         end else begin
-
-          // rest of functions should go below here
+          // Remaining R-type operations.
           case (insn_funct3)
             3'b000: begin
               if (insn_from_imem[31:25] == 7'd0) begin
-                // Implementing add using CLA adder
+                // Implementing add using CLA adder.
                 rf_we = 1'b1;
                 rf_rd = insn_rd;
-                // logic [`REG_SIZE] cla_sum;
-                // cla cla_adder (
-                // .a(rs1_data),
-                // .b(rs2_data),
-                // .cin(1'b0),
-                // .sum(cla_sum)
-                // );
                 rf_rd_data = cla_sum;
               end else if (insn_from_imem[31:25] == 7'b0100000) begin
-                // Implementing sub
+                // Implementing sub.
                 rf_we = 1'b1;
                 rf_rd = insn_rd;
                 rf_rd_data = cla_sum;
@@ -507,7 +504,7 @@ module DatapathSingleCycle (
               end
             end
             3'b001: begin
-              // Implementing sll
+              // Implementing sll.
               if (insn_from_imem[31:25] == 7'd0) begin
                 rf_we = 1'b1;
                 rf_rd = insn_rd;
@@ -517,7 +514,7 @@ module DatapathSingleCycle (
               end
             end
             3'b010: begin
-              // Implementing slt
+              // Implementing slt.
               if (insn_from_imem[31:25] == 7'd0) begin
                 rf_we = 1'b1;
                 rf_rd = insn_rd;
@@ -527,7 +524,7 @@ module DatapathSingleCycle (
               end
             end
             3'b011: begin
-              // Implementing sltu
+              // Implementing sltu.
               if (insn_from_imem[31:25] == 7'd0) begin
                 rf_we = 1'b1;
                 rf_rd = insn_rd;
@@ -537,7 +534,7 @@ module DatapathSingleCycle (
               end
             end
             3'b100: begin
-              // Implementing xor
+              // Implementing xor.
               if (insn_from_imem[31:25] == 7'd0) begin
                 rf_we = 1'b1;
                 rf_rd = insn_rd;
@@ -548,12 +545,12 @@ module DatapathSingleCycle (
             end
             3'b101: begin
               if (insn_from_imem[31:25] == 7'd0) begin
-                // Implementing srl
+                // Implementing srl.
                 rf_we = 1'b1;
                 rf_rd = insn_rd;
                 rf_rd_data = rs1_data >> rs2_data[4:0];
               end else if (insn_from_imem[31:25] == 7'b0100000) begin
-                // Implementing sra
+                // Implementing sra.
                 rf_we = 1'b1;
                 rf_rd = insn_rd;
                 rf_rd_data = $signed(rs1_data) >>> rs2_data[4:0];
@@ -562,7 +559,7 @@ module DatapathSingleCycle (
               end
             end
             3'b110: begin
-              // Implementing or
+              // Implementing or.
               if (insn_from_imem[31:25] == 7'd0) begin
                 rf_we = 1'b1;
                 rf_rd = insn_rd;
@@ -572,7 +569,7 @@ module DatapathSingleCycle (
               end
             end
             3'b111: begin
-              // Implementing and
+              // Implementing and.
               if (insn_from_imem[31:25] == 7'd0) begin
                 rf_we = 1'b1;
                 rf_rd = insn_rd;
@@ -587,6 +584,8 @@ module DatapathSingleCycle (
           endcase
         end
       end
+
+
       OpBranch: begin
         case (insn_funct3)
           3'b000: begin
@@ -644,7 +643,6 @@ module DatapathSingleCycle (
 
 
       ////////////////////////////////////////////////
-      // Opload Case - Adam implemeted function 1
       OpLoad: begin
         // Compute effective address: rs1 + imm (already sign-extended)
         logic [`REG_SIZE] effective_addr;
@@ -664,8 +662,8 @@ module DatapathSingleCycle (
             endcase
             rf_we = 1'b1;
             rf_rd = insn_rd;
-            $display("LB: effective_addr=%h, addr_to_dmem=%h, load_data=%h, rf_rd_data=%h, rd=%d",
-                     effective_addr, addr_to_dmem, load_data_from_dmem, rf_rd_data, insn_rd);
+            // $display("LB: effective_addr=%h, addr_to_dmem=%h, load_data=%h, rf_rd_data=%h, rd=%d",
+            //          effective_addr, addr_to_dmem, load_data_from_dmem, rf_rd_data, insn_rd);
           end
 
           3'b001: begin  // lh: load halfword and sign-extend
@@ -721,10 +719,6 @@ module DatapathSingleCycle (
         endcase
       end
 
-
-
-
-
       OpStore: begin
         logic [`REG_SIZE] addr_temp;
         addr_temp = rs1_data + imm_s_sext;  // Store the computed address
@@ -775,7 +769,6 @@ module DatapathSingleCycle (
         logic [`REG_SIZE] jal_offset;
         logic [4:0] rd_jal;  // Temporary variable for correct JAL rd extraction
 
-        // ✅ Correct sign-extended immediate extraction
         jal_offset = {
           {12{insn_from_imem[31]}},  // Sign-extend
           insn_from_imem[19:12],  // Bits 19:12
@@ -784,20 +777,17 @@ module DatapathSingleCycle (
           1'b0  // Least significant bit 0
         };
 
-        // ✅ Correct `rd` extraction for JAL (bits [11:7])
         rd_jal = insn_from_imem[11:7];
 
-        // ✅ Ensure we are not writing to x0
-        rf_we = (rd_jal != 5'd0);  // Enable write only if rd ≠ x0
-        rf_rd = rd_jal;  // ✅ Store correct destination register
-        rf_rd_data = pcCurrent + 4;  // ✅ Correct return address
+        rf_we = (rd_jal != 5'd0);
+        rf_rd = rd_jal;
+        rf_rd_data = pcCurrent + 4;
 
-        // ✅ Correct PC update for JAL
         pcNext = pcCurrent + jal_offset;
 
-        // Debugging output (for waveforms)
-        $display("JAL: pcCurrent=%h, pcNext=%h, jal_offset=%h, rd=%d, rf_rd_data=%h", pcCurrent,
-                 pcNext, jal_offset, rd_jal, rf_rd_data);
+        // // Debugging output (for waveforms)
+        // $display("JAL: pcCurrent=%h, pcNext=%h, jal_offset=%h, rd=%d, rf_rd_data=%h", pcCurrent,
+        //          pcNext, jal_offset, rd_jal, rf_rd_data);
       end
 
       OpJalr: begin
@@ -807,13 +797,9 @@ module DatapathSingleCycle (
         rf_rd_data = pcCurrent + 4;
         // Compute the new PC: add rs1_data and the immediate then clear the LSB
         pcNext = (rs1_data + imm_i_sext) & ~32'd1;
-        $display("JALR: pcCurrent=%h, pcNext=%h, rs1_data=%h, imm_i_sext=%h, rd=%d, rf_rd_data=%h",
-                 pcCurrent, pcNext, rs1_data, imm_i_sext, insn_rd, rf_rd_data);
+        // $display("JALR: pcCurrent=%h, pcNext=%h, rs1_data=%h, imm_i_sext=%h, rd=%d, rf_rd_data=%h",
+        //          pcCurrent, pcNext, rs1_data, imm_i_sext, insn_rd, rf_rd_data);
       end
-
-
-
-
 
 
       default: begin
