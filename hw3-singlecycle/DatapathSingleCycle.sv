@@ -315,6 +315,9 @@ module DatapathSingleCycle (
   logic [31:0] effective_addr;
   logic [15:0] halfword;
 
+  logic [`REG_SIZE] addr_temp;
+
+
 
   always_comb begin
     illegal_insn = 1'b0;
@@ -723,8 +726,8 @@ module DatapathSingleCycle (
         endcase
       end
 
+
       OpStore: begin
-        logic [`REG_SIZE] addr_temp;
         addr_temp = rs1_data + imm_s_sext;  // Store the computed address
 
         case (insn_funct3)
