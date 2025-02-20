@@ -677,13 +677,13 @@ module DatapathSingleCycle (
             rf_rd_data = {{16{halfword[15]}}, halfword};
             rf_we = 1'b1;
             rf_rd = insn_rd;
-            $display(
-                "LH: effective_addr=%h, addr_to_dmem=%h, load_data=%h, halfword=%h, rf_rd_data=%h, rd=%d",
-                effective_addr, addr_to_dmem, load_data_from_dmem, halfword, rf_rd_data, insn_rd);
+            // $display(
+            //     // "LH: effective_addr=%h, addr_to_dmem=%h, load_data=%h, halfword=%h, rf_rd_data=%h, rd=%d",
+            //     // effective_addr, addr_to_dmem, load_data_from_dmem, halfword, rf_rd_data, insn_rd);
           end
 
           3'b010: begin  // lw: load word
-            addr_to_dmem = effective_addr;  // already word-aligned if properly computed.
+            // addr_to_dmem = effective_addr;  // already word-aligned if properly computed.
             rf_rd_data = load_data_from_dmem;
             rf_we = 1'b1;
             rf_rd = insn_rd;
