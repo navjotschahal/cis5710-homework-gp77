@@ -27,7 +27,7 @@ module RegFile (
   // TODO: your code here
 
   // Reset logic
-  always_ff @(posedge clk or posedge rst) begin
+  always_ff @(posedge clk) begin
     if (rst) begin
       for (int i = 0; i < NumRegs; i++) begin
         regs[i] <= 32'd0;
@@ -180,26 +180,28 @@ module DatapathSingleCycle (
 
   // program counter
   logic [`REG_SIZE] pcNext, pcCurrent;
-  always_ff @(posedge clk or posedge rst) begin
-  if (rst) begin
-    pcCurrent <= 32'd0;
-  end else begin
-    pcCurrent <= pcNext;
+  always @(posedge clk) begin
+    if (rst) begin
+      pcCurrent <= 32'd0;
+    end else begin
+      pcCurrent <= pcNext;
+    end
   end
-end
   assign pc_to_imem = pcCurrent;
 
   // cycle/insn_from_imem counters
   logic [`REG_SIZE] cycles_current, num_insns_current;
-  always_ff @(posedge clk or posedge rst) begin
-  if (rst) begin
-    cycles_current <= 0;
-    num_insns_current <= 0;
-  end else begin
-    cycles_current <= cycles_current + 1;
-    num_insns_current <= num_insns_current + 1;
+  always @(posedge clk) begin
+    if (rst) begin
+      cycles_current <= 0;
+      num_insns_current <= 0;
+    end else begin
+      cycles_current <= cycles_current + 1;
+      if (!rst) begin
+        num_insns_current <= num_insns_current + 1;
+      end
+    end
   end
-end
 
   // NOTE: don't rename your RegFile instance as the tests expect it to be `rf`
   // TODO: you will need to edit the port connections, however.
@@ -227,25 +229,16 @@ end
 
     logic [`REG_SIZE] cla_b_input;
 
-// always_comb begin
-//   if (insn_addi) begin
-//     cla_b_input = imm_i_sext;
-//   end else if (insn_add) begin
-//     cla_b_input = rs2_data;
-//   end else if (insn_sub) begin
-//     cla_b_input = ~rs2_data + 1;
-//   end else begin
-//     cla_b_input = 32'd0; // Default value
-//   end
-// end
-
 always_comb begin
-  case (1'b1)
-    insn_addi: cla_b_input = imm_i_sext;
-    insn_add:  cla_b_input = rs2_data;
-    insn_sub:  cla_b_input = ~rs2_data + 1;
-    default:   cla_b_input = 32'd0; // Default value
-  endcase
+  if (insn_addi) begin
+    cla_b_input = imm_i_sext;
+  end else if (insn_add) begin
+    cla_b_input = rs2_data;
+  end else if (insn_sub) begin
+    cla_b_input = ~rs2_data + 1;
+  end else begin
+    cla_b_input = 32'd0; // Default value
+  end
 end
 
 cla cla_adder (
@@ -520,7 +513,7 @@ cla cla_adder (
     endcase
   end
 
-  always_ff @(posedge clk or posedge rst) begin
+  always_ff @(posedge clk) begin
     if (rst) begin
       pcCurrent <= 32'd0;
     end else begin
@@ -581,37 +574,32 @@ module MemorySingleCycle #(
   localparam int AddrMsb = $clog2(NUM_WORDS) + 1;
   localparam int AddrLsb = 2;
 
-  always @(posedge clock_mem or posedge rst) begin
-  if (rst) begin
-    insn_from_imem <= 32'd0; // or any appropriate reset value
-  end else begin
-    insn_from_imem <= mem_array[{pc_to_imem[AddrMsb:AddrLsb]}];
+  always @(posedge clock_mem) begin
+    if (rst) begin
+    end else begin
+      insn_from_imem <= mem_array[{pc_to_imem[AddrMsb:AddrLsb]}];
+    end
   end
-end
 
-  always @(negedge clock_mem or posedge rst) begin
-  if (rst) begin
-    // Optionally, you can reset the memory array here if needed
-    // for (int i = 0; i < NUM_WORDS; i++) begin
-    //   mem_array[i] <= 32'd0;
-    // end
-  end else begin
-    if (store_we_to_dmem[0]) begin
-      mem_array[addr_to_dmem[AddrMsb:AddrLsb]][7:0] <= store_data_to_dmem[7:0];
+  always @(negedge clock_mem) begin
+    if (rst) begin
+    end else begin
+      if (store_we_to_dmem[0]) begin
+        mem_array[addr_to_dmem[AddrMsb:AddrLsb]][7:0] <= store_data_to_dmem[7:0];
+      end
+      if (store_we_to_dmem[1]) begin
+        mem_array[addr_to_dmem[AddrMsb:AddrLsb]][15:8] <= store_data_to_dmem[15:8];
+      end
+      if (store_we_to_dmem[2]) begin
+        mem_array[addr_to_dmem[AddrMsb:AddrLsb]][23:16] <= store_data_to_dmem[23:16];
+      end
+      if (store_we_to_dmem[3]) begin
+        mem_array[addr_to_dmem[AddrMsb:AddrLsb]][31:24] <= store_data_to_dmem[31:24];
+      end
+      // dmem is "read-first": read returns value before the write
+      load_data_from_dmem <= mem_array[{addr_to_dmem[AddrMsb:AddrLsb]}];
     end
-    if (store_we_to_dmem[1]) begin
-      mem_array[addr_to_dmem[AddrMsb:AddrLsb]][15:8] <= store_data_to_dmem[15:8];
-    end
-    if (store_we_to_dmem[2]) begin
-      mem_array[addr_to_dmem[AddrMsb:AddrLsb]][23:16] <= store_data_to_dmem[23:16];
-    end
-    if (store_we_to_dmem[3]) begin
-      mem_array[addr_to_dmem[AddrMsb:AddrLsb]][31:24] <= store_data_to_dmem[31:24];
-    end
-    // dmem is "read-first": read returns value before the write
-    load_data_from_dmem <= mem_array[{addr_to_dmem[AddrMsb:AddrLsb]}];
   end
-end
 endmodule
 
 /*

@@ -23,7 +23,8 @@ module fulladder(input wire  cin,
                  output wire s,
                  output wire cout);
    wire s_tmp, cout_tmp1, cout_tmp2;
-   halfadder h0(.a(a), .b(b), .s(cout), .cout(cout_tmp1));
+   /* cout to  s_tmp*/
+   halfadder h0(.a(a), .b(b), .s(s_tmp), .cout(cout_tmp1));
    halfadder h1(.a(s_tmp), .b(cin), .s(s), .cout(cout_tmp2));
    assign cout = cout_tmp1 | cout_tmp2;
 endmodule
@@ -35,8 +36,8 @@ module fulladder2(input wire        cin,
                   output wire [1:0] s,
                   output wire       cout);
    wire cout_tmp;
-   fulladder a0(.cin(cin), .a(a[0]), .b(b[0]), .s(s[0]), .cout(cout));
-   fulladder a1(.cin(cout_tmp), .a(a[1]), .b(b[1]), .s(s[0]), .cout(cout_tmp));
+   fulladder a0(.cin(cin), .a(a[0]), .b(b[0]), .s(s[0]), .cout(cout_tmp));
+   fulladder a1(.cin(cout_tmp), .a(a[1]), .b(b[1]), .s(s[1]), .cout(cout));
 endmodule
 
 /* 4-bit ripple-carry adder that adds two 4-bit numbers */
@@ -45,8 +46,8 @@ module rca4(input wire [3:0]  a,
             output wire [3:0] sum,
             output wire       carry_out);
    wire cout0;
-   fulladder2 a0(.cin(1'b1), .a(a[1:0]), .b(b[5:4]), .s(sum[1:0]), .cout(cout0));
-   fulladder2 a3(.cin(cout0), .a(a[3:1]), .b(b[7:6]), .s(sum[3:2]), .cout(carry_out));
+   fulladder2 a0(.cin(1'b0), .a(a[1:0]), .b(b[1:0]), .s(sum[1:0]), .cout(cout0));
+   fulladder2 a3(.cin(cout0), .a(a[3:2]), .b(b[3:2]), .s(sum[3:2]), .cout(carry_out));
 endmodule
 
 /** 
@@ -59,3 +60,6 @@ module rca4_demo(input wire  [6:0] BUTTON,
    rca4 rca (.a(4'd2), .b({BUTTON[2],BUTTON[5],BUTTON[4],BUTTON[6]}), .sum(LED[3:0]), .carry_out(LED[4]));
    assign LED[7:5] = 3'd0;
 endmodule
+
+
+/MYSTUFF/hw1-systemverilog/sim_build/dump.fst
