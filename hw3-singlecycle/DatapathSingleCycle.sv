@@ -310,6 +310,12 @@ module DatapathSingleCycle (
 
   logic illegal_insn;
 
+
+
+  logic [31:0] effective_addr;
+  logic [15:0] halfword;
+
+
   always_comb begin
     illegal_insn = 1'b0;
     rf_we = 1'b0;  // Default to no write
@@ -645,14 +651,15 @@ module DatapathSingleCycle (
       ////////////////////////////////////////////////
       OpLoad: begin
         // Compute effective address: rs1 + imm (already sign-extended)
-        logic [`REG_SIZE] effective_addr;
-        effective_addr = rs1_data + imm_i_sext;
+        // logic [`REG_SIZE] effective_addr;
+        // rs1_data + imm_i_sext;
 
         // Force memory access address to be word-aligned.
-        addr_to_dmem   = {effective_addr[31:2], 2'b00};
+        effective_addr = rs1_data + imm_i_sext;  // Compute sum first
+        addr_to_dmem   = {effective_addr[31:2], 2'b00};  // Now use slicing
 
         case (insn_funct3)
-          3'b000: begin  // lb: load byte and sign-extend
+          3'b000: begin  // LB - Load Byte (Sign-Extend)
             case (effective_addr[1:0])
               2'b00:   rf_rd_data = {{24{load_data_from_dmem[7]}}, load_data_from_dmem[7:0]};
               2'b01:   rf_rd_data = {{24{load_data_from_dmem[15]}}, load_data_from_dmem[15:8]};
@@ -662,13 +669,10 @@ module DatapathSingleCycle (
             endcase
             rf_we = 1'b1;
             rf_rd = insn_rd;
-            // $display("LB: effective_addr=%h, addr_to_dmem=%h, load_data=%h, rf_rd_data=%h, rd=%d",
-            //          effective_addr, addr_to_dmem, load_data_from_dmem, rf_rd_data, insn_rd);
           end
 
           3'b001: begin  // lh: load halfword and sign-extend
             // For LH, we only need effective_addr[1] to select the halfword.
-            logic [15:0] halfword;
             case (effective_addr[1])
               1'b0: halfword = load_data_from_dmem[15:0];
               1'b1: halfword = load_data_from_dmem[31:16];
@@ -702,7 +706,7 @@ module DatapathSingleCycle (
           end
 
           3'b101: begin  // lhu: load halfword, zero-extended
-            logic [15:0] halfword;
+            // logic [15:0] halfword;
             case (effective_addr[1])
               1'b0: halfword = load_data_from_dmem[15:0];
               1'b1: halfword = load_data_from_dmem[31:16];
@@ -766,24 +770,24 @@ module DatapathSingleCycle (
       end
 
       OpJal: begin
-        logic [`REG_SIZE] jal_offset;
-        logic [4:0] rd_jal;  // Temporary variable for correct JAL rd extraction
+        // logic [`REG_SIZE] jal_offset;
+        // logic [4:0] rd_jal;  // Temporary variable for correct JAL rd extraction
 
-        jal_offset = {
-          {12{insn_from_imem[31]}},  // Sign-extend
-          insn_from_imem[19:12],  // Bits 19:12
-          insn_from_imem[20],  // Bit 20
-          insn_from_imem[30:21],  // Bits 30:21
-          1'b0  // Least significant bit 0
-        };
+        // jal_offset = {
+        //   {12{insn_from_imem[31]}},  // Sign-extend
+        //   insn_from_imem[19:12],  // Bits 19:12
+        //   insn_from_imem[20],  // Bit 20
+        //   insn_from_imem[30:21],  // Bits 30:21
+        //   1'b0  // Least significant bit 0
+        // };
 
-        rd_jal = insn_from_imem[11:7];
+        // rd_jal = insn_from_imem[11:7];
 
-        rf_we = (rd_jal != 5'd0);
-        rf_rd = rd_jal;
+        rf_we = 1'b1;
+        rf_rd = insn_rd;
         rf_rd_data = pcCurrent + 4;
 
-        pcNext = pcCurrent + jal_offset;
+        pcNext = pcCurrent + imm_j_sext;
 
         // // Debugging output (for waveforms)
         // $display("JAL: pcCurrent=%h, pcNext=%h, jal_offset=%h, rd=%d, rf_rd_data=%h", pcCurrent,
@@ -792,13 +796,17 @@ module DatapathSingleCycle (
 
       OpJalr: begin
         // Implementing JALR: rd = pcCurrent + 4; pcNext = (rs1_data + imm_i_sext) & ~1
-        rf_we = (insn_rd != 5'd0);  // Write to rd if not x0
+        rf_we = 1'b1;
         rf_rd = insn_rd;
         rf_rd_data = pcCurrent + 4;
         // Compute the new PC: add rs1_data and the immediate then clear the LSB
         pcNext = (rs1_data + imm_i_sext) & ~32'd1;
         // $display("JALR: pcCurrent=%h, pcNext=%h, rs1_data=%h, imm_i_sext=%h, rd=%d, rf_rd_data=%h",
         //          pcCurrent, pcNext, rs1_data, imm_i_sext, insn_rd, rf_rd_data);
+      end
+
+      OpMiscMem: begin
+        pcNext = pcCurrent + 4;
       end
 
 
