@@ -267,27 +267,51 @@ module DatapathSingleCycle (
   //       );
 
   // For the unsigned division instructions (divu and remu)
-  logic [31:0] div_dividend, div_divisor;
-  always_comb begin
-    case (1'b1)
-      insn_divu, insn_remu: begin
-        div_dividend = rs1_data;
-        div_divisor  = rs2_data;
-      end
+  // logic [31:0] div_dividend, div_divisor;
+  // always_comb begin
+  //   case (1'b1)
+  //     insn_divu, insn_remu: begin
+  //       div_dividend = rs1_data;
+  //       div_divisor  = rs2_data;
+  //     end
 
-      default: begin
-        div_dividend = 32'd0;
-        div_divisor  = 32'd0;
-      end
-    endcase
-  end
+  //     default: begin
+  //       div_dividend = 32'd0;
+  //       div_divisor  = 32'd0;
+  //     end
+  //   endcase
+  // end
 
 
-  // Wires for the unsigned divider outputs.
+  // // Wires for the unsigned divider outputs.
+  // wire [31:0] divu_quotient;
+  // wire [31:0] divu_remainder;
+
+  // // Instantiate divider
+  // divider_unsigned u_divider (
+  //     .i_dividend (rs1_data),
+  //     .i_divisor  (rs2_data),
+  //     .o_quotient (divu_quotient),
+  //     .o_remainder(divu_remainder)
+  // );
+
+  // wire [31:0] signed_dividend = (rs1_data[31]) ? -rs1_data : rs1_data;
+  // wire [31:0] signed_divisor = (rs2_data[31]) ? -rs2_data : rs2_data;
+  // wire [31:0] s_div_quotient;
+  // wire [31:0] s_div_remainder;
+
+  // divider_unsigned u_signed_divider (
+  //     .i_dividend (signed_dividend),
+  //     .i_divisor  (signed_divisor),
+  //     .o_quotient (s_div_quotient),
+  //     .o_remainder(s_div_remainder)
+  // );
+
+  // Pre-defined outside the combinational block:
+
+  // Unsigned divider instance for DIVU/REMU:
   wire [31:0] divu_quotient;
   wire [31:0] divu_remainder;
-
-  // Instantiate divider
   divider_unsigned u_divider (
       .i_dividend (rs1_data),
       .i_divisor  (rs2_data),
@@ -295,11 +319,14 @@ module DatapathSingleCycle (
       .o_remainder(divu_remainder)
   );
 
-  wire [31:0] signed_dividend = (rs1_data[31]) ? -rs1_data : rs1_data;
-  wire [31:0] signed_divisor = (rs2_data[31]) ? -rs2_data : rs2_data;
+  // For signed division/remainder we compute absolute values using two's complement.
+  // (We avoid the '-' operator by using the complement plus one.)
+  wire [31:0] signed_dividend = (rs1_data[31]) ? ((~rs1_data) + 32'd1) : rs1_data;
+  wire [31:0] signed_divisor = (rs2_data[31]) ? ((~rs2_data) + 32'd1) : rs2_data;
+
+  // Instantiate a divider module to compute the quotient and remainder on the absolute values:
   wire [31:0] s_div_quotient;
   wire [31:0] s_div_remainder;
-
   divider_unsigned u_signed_divider (
       .i_dividend (signed_dividend),
       .i_divisor  (signed_divisor),
@@ -312,8 +339,8 @@ module DatapathSingleCycle (
 
 
 
-  logic [31:0] effective_addr;
-  logic [15:0] halfword;
+  // logic [31:0] effective_addr;
+  // logic [15:0] halfword;
 
   logic [`REG_SIZE] addr_temp;
 
@@ -322,6 +349,22 @@ module DatapathSingleCycle (
   logic [31:0] abs_dividend;
   logic [31:0] abs_divisor;
 
+  // Pre-defined before the always_comb block:
+  wire [31:0] calc_addr = rs1_data + imm_i_sext;
+  wire [31:0] calc_store_addr = rs1_data + imm_s_sext;
+
+  // Defined before the always_comb block:
+  wire signed [63:0] mul_signed_prod = $signed(
+      {{32{rs1_data[31]}}, rs1_data}
+  ) * $signed(
+      {{32{rs2_data[31]}}, rs2_data}
+  );
+  wire signed [63:0] mulhsu_prod = $signed(
+      {{32{rs1_data[31]}}, rs1_data}
+  ) * $unsigned(
+      {32'b0, rs2_data}
+  );
+  wire [63:0] mulhu_prod = {32'b0, rs1_data} * {32'b0, rs2_data};
 
 
 
@@ -421,83 +464,68 @@ module DatapathSingleCycle (
       OpRegReg: begin
         if (insn_mul) begin
           // MUL: rd = (rs1 * rs2)[31:0]
-          prod = $signed({{32{rs1_data[31]}}, rs1_data}) * $signed({{32{rs2_data[31]}}, rs2_data});
-          rf_we = 1'b1;
-          rf_rd = insn_rd;
-          rf_rd_data = prod[31:0];
+          rf_we      = 1'b1;
+          rf_rd      = insn_rd;
+          rf_rd_data = mul_signed_prod[31:0];
         end else if (insn_mulh) begin
           // MULH: rd = (signed(rs1) * signed(rs2))[63:32]
-          // logic signed [63:0] prod;
-          prod = $signed({{32{rs1_data[31]}}, rs1_data}) * $signed({{32{rs2_data[31]}}, rs2_data});
-          rf_we = 1'b1;
-          rf_rd = insn_rd;
-          rf_rd_data = prod[63:32];
+          rf_we      = 1'b1;
+          rf_rd      = insn_rd;
+          rf_rd_data = mul_signed_prod[63:32];
         end else if (insn_mulhsu) begin
           // MULHSU: rd = (signed(rs1) * unsigned(rs2))[63:32]
-          // logic signed [63:0] prod;
-          prod = $signed({{32{rs1_data[31]}}, rs1_data}) * $unsigned({32'b0, rs2_data});
-          rf_we = 1'b1;
-          rf_rd = insn_rd;
-          rf_rd_data = prod[63:32];
+          rf_we      = 1'b1;
+          rf_rd      = insn_rd;
+          rf_rd_data = mulhsu_prod[63:32];
         end else if (insn_mulhu) begin
           // MULHU: rd = (unsigned(rs1) * unsigned(rs2))[63:32]
-          // logic [63:0] prod;
-          prod = {32'b0, rs1_data} * {32'b0, rs2_data};
+          rf_we      = 1'b1;
+          rf_rd      = insn_rd;
+          rf_rd_data = mulhu_prod[63:32];
+        end else if (insn_div) begin
+          // DIV: rd = rs1 / signed(rs2)
           rf_we = 1'b1;
           rf_rd = insn_rd;
-          rf_rd_data = prod[63:32];
-        end else if (insn_div) begin
-          // DIV: rd = rs1 / signed(rs2) using the divider module with sign adjustment.
           if (rs2_data == 32'd0) begin
             rf_rd_data = 32'hFFFFFFFF;  // Division by zero yields -1.
           end else if ((rs1_data == 32'h80000000) && (rs2_data == 32'hFFFFFFFF)) begin
             rf_rd_data = 32'h80000000;  // Special case: MIN_INT / -1.
           end else begin
-
-            abs_dividend = (rs1_data[31]) ? ((~rs1_data) + 32'd1) : rs1_data;
-            abs_divisor = (rs2_data[31]) ? ((~rs2_data) + 32'd1) : rs2_data;
+            // Adjust the quotient sign based on the signs of rs1 and rs2.
             rf_rd_data = (rs1_data[31] ^ rs2_data[31])
                          ? ((~s_div_quotient) + 32'd1)
                          : s_div_quotient;
           end
+        end else if (insn_divu) begin
+          // DIVU: rd = rs1 / unsigned(rs2)
           rf_we = 1'b1;
           rf_rd = insn_rd;
-          // $display("DIV: rs1=%h, rs2=%h, result=%h, rd=%d", rs1_data, rs2_data, rf_rd_data,
-          //          insn_rd);
-        end else if (insn_divu) begin
-          // DIVU: rd = rs1 / unsign(rs2) using the divider module.
           if (rs2_data == 32'd0) begin
             rf_rd_data = 32'hFFFFFFFF;
           end else begin
             rf_rd_data = divu_quotient;
           end
+        end else if (insn_rem) begin
+          // REM: rd = rs1 % signed(rs2)
           rf_we = 1'b1;
           rf_rd = insn_rd;
-        end else if (insn_rem) begin
-          // REM: rd = rs1 % signed(rs2) using the divider module with sign adjustment
           if (rs2_data == 32'd0) begin
             rf_rd_data = rs1_data;
           end else if ((rs1_data == 32'h80000000) && (rs2_data == 32'hFFFFFFFF)) begin
             rf_rd_data = 32'd0;
           end else begin
             // The remainder takes the sign of the dividend.
-            // logic [31:0] abs_dividend;
-            // logic [31:0] abs_divisor;
-            abs_dividend = (rs1_data[31]) ? ((~rs1_data) + 32'd1) : rs1_data;
-            abs_divisor  = (rs2_data[31]) ? ((~rs2_data) + 32'd1) : rs2_data;
-            rf_rd_data   = (rs1_data[31]) ? ((~s_div_remainder) + 32'd1) : s_div_remainder;
+            rf_rd_data = (rs1_data[31]) ? ((~s_div_remainder) + 32'd1) : s_div_remainder;
           end
+        end else if (insn_remu) begin
+          // REMU: rd = rs1 % unsigned(rs2)
           rf_we = 1'b1;
           rf_rd = insn_rd;
-        end else if (insn_remu) begin
-          // REMU: rd = rs1 % unsign(rs2)
           if (rs2_data == 32'd0) begin
             rf_rd_data = rs1_data;
           end else begin
             rf_rd_data = divu_remainder;
           end
-          rf_we = 1'b1;
-          rf_rd = insn_rd;
         end else begin
           // Remaining R-type operations.
           case (insn_funct3)
@@ -653,119 +681,84 @@ module DatapathSingleCycle (
         end
       end
 
-
-
-      ////////////////////////////////////////////////
       OpLoad: begin
-        // Compute effective address: rs1 + imm (already sign-extended)
-        // logic [`REG_SIZE] effective_addr;
-        // rs1_data + imm_i_sext;
-
-        // Force memory access address to be word-aligned.
-        effective_addr = rs1_data + imm_i_sext;  // Compute sum first
-        addr_to_dmem   = {effective_addr[31:2], 2'b00};  // Now use slicing
-
+        // Use calc_addr to compute the word-aligned memory address.
+        addr_to_dmem = {calc_addr[31:2], 2'b00};
         case (insn_funct3)
-          3'b000: begin  // LB - Load Byte (Sign-Extend)
-            case (effective_addr[1:0])
-              2'b00:   rf_rd_data = {{24{load_data_from_dmem[7]}}, load_data_from_dmem[7:0]};
-              2'b01:   rf_rd_data = {{24{load_data_from_dmem[15]}}, load_data_from_dmem[15:8]};
-              2'b10:   rf_rd_data = {{24{load_data_from_dmem[23]}}, load_data_from_dmem[23:16]};
-              2'b11:   rf_rd_data = {{24{load_data_from_dmem[31]}}, load_data_from_dmem[31:24]};
+          3'b000: begin  // LB: Load Byte (Sign-Extend)
+            case (calc_addr[1:0])
+              2'd0: rf_rd_data = {{24{load_data_from_dmem[7]}}, load_data_from_dmem[7:0]};
+              2'd1: rf_rd_data = {{24{load_data_from_dmem[15]}}, load_data_from_dmem[15:8]};
+              2'd2: rf_rd_data = {{24{load_data_from_dmem[23]}}, load_data_from_dmem[23:16]};
+              2'd3: rf_rd_data = {{24{load_data_from_dmem[31]}}, load_data_from_dmem[31:24]};
               default: rf_rd_data = 32'd0;
             endcase
             rf_we = 1'b1;
             rf_rd = insn_rd;
           end
-
-          3'b001: begin  // lh: load halfword and sign-extend
-            // For LH, we only need effective_addr[1] to select the halfword.
-            case (effective_addr[1])
-              1'b0: halfword = load_data_from_dmem[15:0];
-              1'b1: halfword = load_data_from_dmem[31:16];
-              default: halfword = 16'd0;  // Should never occur.
+          3'b001: begin  // LH: Load Halfword (Sign-Extend)
+            case (calc_addr[1])
+              1'b0: rf_rd_data = {{16{load_data_from_dmem[15]}}, load_data_from_dmem[15:0]};
+              1'b1: rf_rd_data = {{16{load_data_from_dmem[31]}}, load_data_from_dmem[31:16]};
+              default: rf_rd_data = 32'd0;
             endcase
-            rf_rd_data = {{16{halfword[15]}}, halfword};
             rf_we = 1'b1;
             rf_rd = insn_rd;
-            // $display(
-            //     // "LH: effective_addr=%h, addr_to_dmem=%h, load_data=%h, halfword=%h, rf_rd_data=%h, rd=%d",
-            //     // effective_addr, addr_to_dmem, load_data_from_dmem, halfword, rf_rd_data, insn_rd);
           end
-
-          3'b010: begin  // lw: load word
-            // addr_to_dmem = effective_addr;  // already word-aligned if properly computed.
+          3'b010: begin  // LW: Load Word
             rf_rd_data = load_data_from_dmem;
             rf_we = 1'b1;
             rf_rd = insn_rd;
           end
-
-          3'b100: begin  // lbu: load byte, zero-extended
-            case (effective_addr[1:0])
-              2'b00:   rf_rd_data = {24'd0, load_data_from_dmem[7:0]};
-              2'b01:   rf_rd_data = {24'd0, load_data_from_dmem[15:8]};
-              2'b10:   rf_rd_data = {24'd0, load_data_from_dmem[23:16]};
-              2'b11:   rf_rd_data = {24'd0, load_data_from_dmem[31:24]};
+          3'b100: begin  // LBU: Load Byte (Zero-Extend)
+            case (calc_addr[1:0])
+              2'd0: rf_rd_data = {24'd0, load_data_from_dmem[7:0]};
+              2'd1: rf_rd_data = {24'd0, load_data_from_dmem[15:8]};
+              2'd2: rf_rd_data = {24'd0, load_data_from_dmem[23:16]};
+              2'd3: rf_rd_data = {24'd0, load_data_from_dmem[31:24]};
               default: rf_rd_data = 32'd0;
             endcase
             rf_we = 1'b1;
             rf_rd = insn_rd;
           end
-
-          3'b101: begin  // lhu: load halfword, zero-extended
-            // logic [15:0] halfword;
-            case (effective_addr[1])
-              1'b0: halfword = load_data_from_dmem[15:0];
-              1'b1: halfword = load_data_from_dmem[31:16];
-              default: halfword = 16'd0;
+          3'b101: begin  // LHU: Load Halfword (Zero-Extend)
+            case (calc_addr[1])
+              1'b0: rf_rd_data = {16'd0, load_data_from_dmem[15:0]};
+              1'b1: rf_rd_data = {16'd0, load_data_from_dmem[31:16]};
+              default: rf_rd_data = 32'd0;
             endcase
-            rf_rd_data = {16'd0, halfword};
             rf_we = 1'b1;
             rf_rd = insn_rd;
           end
-
           default: begin
             illegal_insn = 1'b1;
           end
         endcase
       end
 
-
       OpStore: begin
-        addr_temp = rs1_data + imm_s_sext;  // Store the computed address
-
+        // Use calc_store_addr (rs1_data + imm_s_sext) for the store operations.
+        addr_to_dmem = {calc_store_addr[31:2], 2'b00};  // Force word alignment
         case (insn_funct3)
           3'b000: begin  // sb - store byte (8-bit)
-            addr_to_dmem = {addr_temp[31:2], 2'b00};  // Force word alignment
-            store_we_to_dmem = 4'b0001 << addr_temp[1:0];  // Enable only one byte
-            store_data_to_dmem = {4{rs2_data[7:0]}};  // Replicate byte
+            store_we_to_dmem   = 4'b0001 << calc_store_addr[1:0];  // Enable only one byte
+            store_data_to_dmem = {4{rs2_data[7:0]}};  // Replicate the byte
           end
 
           3'b001: begin  // sh - store halfword (16-bit)
-            // Compute effective address for store.
-            // We force word alignment by taking the upper 30 bits and appending 2'b00.
-            addr_to_dmem = {addr_temp[31:2], 2'b00};
-            // Use the lower two bits of addr_temp to determine which halfword should be written.
-            // For a properly aligned halfword, addr_temp[1:0] should be either 00 or 10.
-            // If it is 00, write to lower half (store enable 4'b0011).
-            // If it is 10, write to upper half (store enable 4'b1100).
-            case (addr_temp[1:0])
-              2'b00: store_we_to_dmem = 4'b0011;
-              2'b10: store_we_to_dmem = 4'b1100;
+            case (calc_store_addr[1:0])
+              2'd0: store_we_to_dmem = 4'b0011;  // Write lower halfword
+              2'd2: store_we_to_dmem = 4'b1100;  // Write upper halfword
               default: begin
-                // This should not occur for a valid halfword-aligned address.
                 store_we_to_dmem = 4'b0000;
                 illegal_insn = 1'b1;
               end
             endcase
-            // Replicate the 16-bit value across the two halfwords.
-            store_data_to_dmem = {2{rs2_data[15:0]}};
+            store_data_to_dmem = {2{rs2_data[15:0]}};  // Replicate the halfword
           end
 
-
           3'b010: begin  // sw - store word (32-bit)
-            addr_to_dmem = {addr_temp[31:2], 2'b00};  // Force word alignment
-            store_we_to_dmem = 4'b1111;  // Enable all four bytes
+            store_we_to_dmem   = 4'b1111;  // Enable all four bytes
             store_data_to_dmem = rs2_data;  // Store entire word
           end
 
@@ -773,28 +766,29 @@ module DatapathSingleCycle (
             illegal_insn = 1'b1;
           end
         endcase
-
       end
 
+
+
+
+
+
+
       OpJal: begin
-        // logic [`REG_SIZE] jal_offset;
-        // logic [4:0] rd_jal;  // Temporary variable for correct JAL rd extraction
 
-        // jal_offset = {
-        //   {12{insn_from_imem[31]}},  // Sign-extend
-        //   insn_from_imem[19:12],  // Bits 19:12
-        //   insn_from_imem[20],  // Bit 20
-        //   insn_from_imem[30:21],  // Bits 30:21
-        //   1'b0  // Least significant bit 0
-        // };
+        // For JAL, store return address (PC+4) in the destination register
+        // and update PC by adding the sign-extended J-type immediate.
+        rf_we      = 1'b1;
+        rf_rd      = insn_rd;
+        rf_rd_data = pcCurrent + 32'd4;
+        pcNext     = pcCurrent + imm_j_sext;
 
-        // rd_jal = insn_from_imem[11:7];
 
-        rf_we = 1'b1;
-        rf_rd = insn_rd;
-        rf_rd_data = pcCurrent + 4;
+        // rf_we = 1'b1;
+        // rf_rd = insn_rd;
+        // rf_rd_data = pcCurrent + 4;
 
-        pcNext = pcCurrent + imm_j_sext;
+        // pcNext = pcCurrent + imm_j_sext;
 
         // // Debugging output (for waveforms)
         // $display("JAL: pcCurrent=%h, pcNext=%h, jal_offset=%h, rd=%d, rf_rd_data=%h", pcCurrent,
@@ -802,14 +796,21 @@ module DatapathSingleCycle (
       end
 
       OpJalr: begin
-        // Implementing JALR: rd = pcCurrent + 4; pcNext = (rs1_data + imm_i_sext) & ~1
-        rf_we = 1'b1;
-        rf_rd = insn_rd;
-        rf_rd_data = pcCurrent + 4;
-        // Compute the new PC: add rs1_data and the immediate then clear the LSB
-        pcNext = (rs1_data + imm_i_sext) & ~32'd1;
-        // $display("JALR: pcCurrent=%h, pcNext=%h, rs1_data=%h, imm_i_sext=%h, rd=%d, rf_rd_data=%h",
-        //          pcCurrent, pcNext, rs1_data, imm_i_sext, insn_rd, rf_rd_data);
+
+        // For JALR, store return address (PC+4) in the destination register.
+        // Compute the new PC as (rs1_data + imm_i_sext) with the LSB cleared.
+        rf_we      = 1'b1;
+        rf_rd      = insn_rd;
+        rf_rd_data = pcCurrent + 32'd4;
+        pcNext     = (rs1_data + imm_i_sext) & 32'hFFFFFFFE;
+        //   // Implementing JALR: rd = pcCurrent + 4; pcNext = (rs1_data + imm_i_sext) & ~1
+        //   rf_we = 1'b1;
+        //   rf_rd = insn_rd;
+        //   rf_rd_data = pcCurrent + 4;
+        //   // Compute the new PC: add rs1_data and the immediate then clear the LSB
+        //   pcNext = (rs1_data + imm_i_sext) & ~32'd1;
+        //   // $display("JALR: pcCurrent=%h, pcNext=%h, rs1_data=%h, imm_i_sext=%h, rd=%d, rf_rd_data=%h",
+        //   //          pcCurrent, pcNext, rs1_data, imm_i_sext, insn_rd, rf_rd_data);
       end
 
       OpMiscMem: begin
