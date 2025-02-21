@@ -266,48 +266,6 @@ module DatapathSingleCycle (
   //         .sum(cla_sum)
   //       );
 
-  // For the unsigned division instructions (divu and remu)
-  // logic [31:0] div_dividend, div_divisor;
-  // always_comb begin
-  //   case (1'b1)
-  //     insn_divu, insn_remu: begin
-  //       div_dividend = rs1_data;
-  //       div_divisor  = rs2_data;
-  //     end
-
-  //     default: begin
-  //       div_dividend = 32'd0;
-  //       div_divisor  = 32'd0;
-  //     end
-  //   endcase
-  // end
-
-
-  // // Wires for the unsigned divider outputs.
-  // wire [31:0] divu_quotient;
-  // wire [31:0] divu_remainder;
-
-  // // Instantiate divider
-  // divider_unsigned u_divider (
-  //     .i_dividend (rs1_data),
-  //     .i_divisor  (rs2_data),
-  //     .o_quotient (divu_quotient),
-  //     .o_remainder(divu_remainder)
-  // );
-
-  // wire [31:0] signed_dividend = (rs1_data[31]) ? -rs1_data : rs1_data;
-  // wire [31:0] signed_divisor = (rs2_data[31]) ? -rs2_data : rs2_data;
-  // wire [31:0] s_div_quotient;
-  // wire [31:0] s_div_remainder;
-
-  // divider_unsigned u_signed_divider (
-  //     .i_dividend (signed_dividend),
-  //     .i_divisor  (signed_divisor),
-  //     .o_quotient (s_div_quotient),
-  //     .o_remainder(s_div_remainder)
-  // );
-
-  // Pre-defined outside the combinational block:
 
   // Unsigned divider instance for DIVU/REMU:
   wire [31:0] divu_quotient;
@@ -319,8 +277,7 @@ module DatapathSingleCycle (
       .o_remainder(divu_remainder)
   );
 
-  // For signed division/remainder we compute absolute values using two's complement.
-  // (We avoid the '-' operator by using the complement plus one.)
+  // For signed division/remainder we compute absolute values
   wire [31:0] signed_dividend = (rs1_data[31]) ? ((~rs1_data) + 32'd1) : rs1_data;
   wire [31:0] signed_divisor = (rs2_data[31]) ? ((~rs2_data) + 32'd1) : rs2_data;
 
@@ -336,11 +293,6 @@ module DatapathSingleCycle (
 
 
   logic illegal_insn;
-
-
-
-  // logic [31:0] effective_addr;
-  // logic [15:0] halfword;
 
   logic [`REG_SIZE] addr_temp;
 
@@ -376,6 +328,9 @@ module DatapathSingleCycle (
     halt = 1'b0;  // Default to no halt
     pcNext = pcCurrent + 4;  // Default to current PC
     addr_to_dmem = 32'd0;
+
+    store_we_to_dmem = 4'b0000;
+    store_data_to_dmem = 32'd0;
 
 
     case (insn_opcode)
@@ -771,45 +726,23 @@ module DatapathSingleCycle (
 
 
 
-
-
-
       OpJal: begin
 
-        // For JAL, store return address (PC+4) in the destination register
-        // and update PC by adding the sign-extended J-type immediate.
         rf_we      = 1'b1;
         rf_rd      = insn_rd;
         rf_rd_data = pcCurrent + 4;
         pcNext     = pcCurrent + imm_j_sext;
 
-        // rf_we = 1'b1;
-        // rf_rd = insn_rd;
-        // rf_rd_data = pcCurrent + 4;
 
-        // pcNext = pcCurrent + imm_j_sext;
-
-        // // Debugging output (for waveforms)
-        // $display("JAL: pcCurrent=%h, pcNext=%h, jal_offset=%h, rd=%d, rf_rd_data=%h", pcCurrent,
-        //          pcNext, jal_offset, rd_jal, rf_rd_data);
       end
 
       OpJalr: begin
 
-        // For JALR, store return address (PC+4) in the destination register.
-        // Compute the new PC as (rs1_data + imm_i_sext) with the LSB cleared.
         rf_we      = 1'b1;
         rf_rd      = insn_rd;
         rf_rd_data = pcCurrent + 4;
         pcNext     = (rs1_data + imm_i_sext) & 32'hFFFFFFFE;
-        //   // Implementing JALR: rd = pcCurrent + 4; pcNext = (rs1_data + imm_i_sext) & ~1
-        //   rf_we = 1'b1;
-        //   rf_rd = insn_rd;
-        //   rf_rd_data = pcCurrent + 4;
-        //   // Compute the new PC: add rs1_data and the immediate then clear the LSB
-        //   pcNext = (rs1_data + imm_i_sext) & ~32'd1;
-        //   // $display("JALR: pcCurrent=%h, pcNext=%h, rs1_data=%h, imm_i_sext=%h, rd=%d, rf_rd_data=%h",
-        //   //          pcCurrent, pcNext, rs1_data, imm_i_sext, insn_rd, rf_rd_data);
+
       end
 
       OpMiscMem: begin
