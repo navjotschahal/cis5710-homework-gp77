@@ -317,6 +317,12 @@ module DatapathSingleCycle (
 
   logic [`REG_SIZE] addr_temp;
 
+  logic signed [63:0] prod;
+
+  logic [31:0] abs_dividend;
+  logic [31:0] abs_divisor;
+
+
 
 
   always_comb begin
@@ -415,28 +421,27 @@ module DatapathSingleCycle (
       OpRegReg: begin
         if (insn_mul) begin
           // MUL: rd = (rs1 * rs2)[31:0]
-          logic signed [63:0] prod;
           prod = $signed({{32{rs1_data[31]}}, rs1_data}) * $signed({{32{rs2_data[31]}}, rs2_data});
           rf_we = 1'b1;
           rf_rd = insn_rd;
           rf_rd_data = prod[31:0];
         end else if (insn_mulh) begin
           // MULH: rd = (signed(rs1) * signed(rs2))[63:32]
-          logic signed [63:0] prod;
+          // logic signed [63:0] prod;
           prod = $signed({{32{rs1_data[31]}}, rs1_data}) * $signed({{32{rs2_data[31]}}, rs2_data});
           rf_we = 1'b1;
           rf_rd = insn_rd;
           rf_rd_data = prod[63:32];
         end else if (insn_mulhsu) begin
           // MULHSU: rd = (signed(rs1) * unsigned(rs2))[63:32]
-          logic signed [63:0] prod;
+          // logic signed [63:0] prod;
           prod = $signed({{32{rs1_data[31]}}, rs1_data}) * $unsigned({32'b0, rs2_data});
           rf_we = 1'b1;
           rf_rd = insn_rd;
           rf_rd_data = prod[63:32];
         end else if (insn_mulhu) begin
           // MULHU: rd = (unsigned(rs1) * unsigned(rs2))[63:32]
-          logic [63:0] prod;
+          // logic [63:0] prod;
           prod = {32'b0, rs1_data} * {32'b0, rs2_data};
           rf_we = 1'b1;
           rf_rd = insn_rd;
@@ -448,8 +453,7 @@ module DatapathSingleCycle (
           end else if ((rs1_data == 32'h80000000) && (rs2_data == 32'hFFFFFFFF)) begin
             rf_rd_data = 32'h80000000;  // Special case: MIN_INT / -1.
           end else begin
-            logic [31:0] abs_dividend;
-            logic [31:0] abs_divisor;
+
             abs_dividend = (rs1_data[31]) ? ((~rs1_data) + 32'd1) : rs1_data;
             abs_divisor = (rs2_data[31]) ? ((~rs2_data) + 32'd1) : rs2_data;
             rf_rd_data = (rs1_data[31] ^ rs2_data[31])
@@ -477,8 +481,8 @@ module DatapathSingleCycle (
             rf_rd_data = 32'd0;
           end else begin
             // The remainder takes the sign of the dividend.
-            logic [31:0] abs_dividend;
-            logic [31:0] abs_divisor;
+            // logic [31:0] abs_dividend;
+            // logic [31:0] abs_divisor;
             abs_dividend = (rs1_data[31]) ? ((~rs1_data) + 32'd1) : rs1_data;
             abs_divisor  = (rs2_data[31]) ? ((~rs2_data) + 32'd1) : rs2_data;
             rf_rd_data   = (rs1_data[31]) ? ((~s_div_remainder) + 32'd1) : s_div_remainder;
