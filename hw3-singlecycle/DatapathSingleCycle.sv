@@ -780,9 +780,8 @@ module DatapathSingleCycle (
         // and update PC by adding the sign-extended J-type immediate.
         rf_we      = 1'b1;
         rf_rd      = insn_rd;
-        rf_rd_data = pcCurrent + 32'd4;
+        rf_rd_data = pcCurrent + 4;
         pcNext     = pcCurrent + imm_j_sext;
-
 
         // rf_we = 1'b1;
         // rf_rd = insn_rd;
@@ -801,7 +800,7 @@ module DatapathSingleCycle (
         // Compute the new PC as (rs1_data + imm_i_sext) with the LSB cleared.
         rf_we      = 1'b1;
         rf_rd      = insn_rd;
-        rf_rd_data = pcCurrent + 32'd4;
+        rf_rd_data = pcCurrent + 4;
         pcNext     = (rs1_data + imm_i_sext) & 32'hFFFFFFFE;
         //   // Implementing JALR: rd = pcCurrent + 4; pcNext = (rs1_data + imm_i_sext) & ~1
         //   rf_we = 1'b1;
