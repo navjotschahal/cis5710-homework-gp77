@@ -228,20 +228,8 @@ module DatapathSingleCycle (
   );
 
   logic [`REG_SIZE] cla_sum;
-
   logic [`REG_SIZE] cla_b_input;
 
-  // always_comb begin
-  //   if (insn_addi) begin
-  //     cla_b_input = imm_i_sext;
-  //   end else if (insn_add) begin
-  //     cla_b_input = rs2_data;
-  //   end else if (insn_sub) begin
-  //     cla_b_input = ~rs2_data + 1;
-  //   end else begin
-  //     cla_b_input = 32'd0; // Default value
-  //   end
-  // end
 
   always_comb begin
     case (1'b1)
@@ -258,14 +246,6 @@ module DatapathSingleCycle (
       .cin(1'b0),
       .sum(cla_sum)
   );
-
-  // cla cla_adder_add (
-  //         .a(rs1_data),
-  //         .b(rs2_data),
-  //         .cin(1'b0),
-  //         .sum(cla_sum)
-  //       );
-
 
   // Unsigned divider instance for DIVU/REMU:
   wire [31:0] divu_quotient;
@@ -284,6 +264,7 @@ module DatapathSingleCycle (
   // Instantiate a divider module to compute the quotient and remainder on the absolute values:
   wire [31:0] s_div_quotient;
   wire [31:0] s_div_remainder;
+
   divider_unsigned u_signed_divider (
       .i_dividend (signed_dividend),
       .i_divisor  (signed_divisor),
@@ -291,21 +272,11 @@ module DatapathSingleCycle (
       .o_remainder(s_div_remainder)
   );
 
-
-  logic illegal_insn;
-
-  logic [`REG_SIZE] addr_temp;
-
-  logic signed [63:0] prod;
-
-  logic [31:0] abs_dividend;
-  logic [31:0] abs_divisor;
-
-  // Pre-defined before the always_comb block:
+  // for store and load operations 
   wire [31:0] calc_addr = rs1_data + imm_i_sext;
   wire [31:0] calc_store_addr = rs1_data + imm_s_sext;
 
-  // Defined before the always_comb block:
+  // for multiplication
   wire signed [63:0] mul_signed_prod = $signed(
       {{32{rs1_data[31]}}, rs1_data}
   ) * $signed(
@@ -317,21 +288,23 @@ module DatapathSingleCycle (
       {32'b0, rs2_data}
   );
   wire [63:0] mulhu_prod = {32'b0, rs1_data} * {32'b0, rs2_data};
+  logic signed [63:0] prod;
 
+  logic illegal_insn;  // for illegal operations 
 
 
   always_comb begin
     illegal_insn = 1'b0;
     rf_we = 1'b0;  // Default to no write
-    rf_rd = 0;  // 5'd0; // Default to register 0
-    rf_rd_data = 0;  // 32'd0; // Default to 0
+    rf_rd = 0;  // Default to register 0
+    rf_rd_data = 0;  // Default to 0
     halt = 1'b0;  // Default to no halt
     pcNext = pcCurrent + 4;  // Default to current PC
-    addr_to_dmem = 32'd0;
 
+    // default values
+    addr_to_dmem = 32'd0;
     store_we_to_dmem = 4'b0000;
     store_data_to_dmem = 32'd0;
-
 
     case (insn_opcode)
       OpLui: begin
@@ -417,28 +390,31 @@ module DatapathSingleCycle (
       end
 
       OpRegReg: begin
+        // multiplication
         if (insn_mul) begin
-          // MUL: rd = (rs1 * rs2)[31:0]
+          // MUL
           rf_we      = 1'b1;
           rf_rd      = insn_rd;
           rf_rd_data = mul_signed_prod[31:0];
         end else if (insn_mulh) begin
-          // MULH: rd = (signed(rs1) * signed(rs2))[63:32]
+          // MULH
           rf_we      = 1'b1;
           rf_rd      = insn_rd;
           rf_rd_data = mul_signed_prod[63:32];
         end else if (insn_mulhsu) begin
-          // MULHSU: rd = (signed(rs1) * unsigned(rs2))[63:32]
+          // MULHSU
           rf_we      = 1'b1;
           rf_rd      = insn_rd;
           rf_rd_data = mulhsu_prod[63:32];
         end else if (insn_mulhu) begin
-          // MULHU: rd = (unsigned(rs1) * unsigned(rs2))[63:32]
+          // MULHU
           rf_we      = 1'b1;
           rf_rd      = insn_rd;
           rf_rd_data = mulhu_prod[63:32];
+
+          // division
         end else if (insn_div) begin
-          // DIV: rd = rs1 / signed(rs2)
+          // DIV
           rf_we = 1'b1;
           rf_rd = insn_rd;
           if (rs2_data == 32'd0) begin
@@ -452,7 +428,7 @@ module DatapathSingleCycle (
                          : s_div_quotient;
           end
         end else if (insn_divu) begin
-          // DIVU: rd = rs1 / unsigned(rs2)
+          // DIVU
           rf_we = 1'b1;
           rf_rd = insn_rd;
           if (rs2_data == 32'd0) begin
@@ -460,8 +436,10 @@ module DatapathSingleCycle (
           end else begin
             rf_rd_data = divu_quotient;
           end
+
+          // rem operations
         end else if (insn_rem) begin
-          // REM: rd = rs1 % signed(rs2)
+          // REM
           rf_we = 1'b1;
           rf_rd = insn_rd;
           if (rs2_data == 32'd0) begin
@@ -473,7 +451,7 @@ module DatapathSingleCycle (
             rf_rd_data = (rs1_data[31]) ? ((~s_div_remainder) + 32'd1) : s_div_remainder;
           end
         end else if (insn_remu) begin
-          // REMU: rd = rs1 % unsigned(rs2)
+          // REMU
           rf_we = 1'b1;
           rf_rd = insn_rd;
           if (rs2_data == 32'd0) begin
@@ -482,7 +460,8 @@ module DatapathSingleCycle (
             rf_rd_data = divu_remainder;
           end
         end else begin
-          // Remaining R-type operations.
+
+          // Remaining operations
           case (insn_funct3)
             3'b000: begin
               if (insn_from_imem[31:25] == 7'd0) begin
@@ -628,19 +607,18 @@ module DatapathSingleCycle (
       OpEnviron: begin
         if (insn_from_imem[31:7] == 25'd0) begin
           // Implementing ecall
-          // Transfer control to OS (this is a placeholder, actual implementation may vary)
-          // For now, we can set a halt signal or similar
           halt = 1'b1;
         end else begin
           illegal_insn = 1'b1;
         end
       end
 
+      // load operations
       OpLoad: begin
-        // Use calc_addr to compute the word-aligned memory address.
+        // Use calc_addr to compute the word-aligned memory address
         addr_to_dmem = {calc_addr[31:2], 2'b00};
         case (insn_funct3)
-          3'b000: begin  // LB: Load Byte (Sign-Extend)
+          3'b000: begin  // lb
             case (calc_addr[1:0])
               2'd0: rf_rd_data = {{24{load_data_from_dmem[7]}}, load_data_from_dmem[7:0]};
               2'd1: rf_rd_data = {{24{load_data_from_dmem[15]}}, load_data_from_dmem[15:8]};
@@ -651,7 +629,7 @@ module DatapathSingleCycle (
             rf_we = 1'b1;
             rf_rd = insn_rd;
           end
-          3'b001: begin  // LH: Load Halfword (Sign-Extend)
+          3'b001: begin  // lh
             case (calc_addr[1])
               1'b0: rf_rd_data = {{16{load_data_from_dmem[15]}}, load_data_from_dmem[15:0]};
               1'b1: rf_rd_data = {{16{load_data_from_dmem[31]}}, load_data_from_dmem[31:16]};
@@ -660,12 +638,12 @@ module DatapathSingleCycle (
             rf_we = 1'b1;
             rf_rd = insn_rd;
           end
-          3'b010: begin  // LW: Load Word
+          3'b010: begin  // lw
             rf_rd_data = load_data_from_dmem;
             rf_we = 1'b1;
             rf_rd = insn_rd;
           end
-          3'b100: begin  // LBU: Load Byte (Zero-Extend)
+          3'b100: begin  // lbu
             case (calc_addr[1:0])
               2'd0: rf_rd_data = {24'd0, load_data_from_dmem[7:0]};
               2'd1: rf_rd_data = {24'd0, load_data_from_dmem[15:8]};
@@ -676,7 +654,7 @@ module DatapathSingleCycle (
             rf_we = 1'b1;
             rf_rd = insn_rd;
           end
-          3'b101: begin  // LHU: Load Halfword (Zero-Extend)
+          3'b101: begin  // lhu
             case (calc_addr[1])
               1'b0: rf_rd_data = {16'd0, load_data_from_dmem[15:0]};
               1'b1: rf_rd_data = {16'd0, load_data_from_dmem[31:16]};
@@ -691,16 +669,17 @@ module DatapathSingleCycle (
         endcase
       end
 
+      // store operations
       OpStore: begin
-        // Use calc_store_addr (rs1_data + imm_s_sext) for the store operations.
+        // Use calc_store_addr for the store operations
         addr_to_dmem = {calc_store_addr[31:2], 2'b00};  // Force word alignment
         case (insn_funct3)
-          3'b000: begin  // sb - store byte (8-bit)
+          3'b000: begin  // sb 
             store_we_to_dmem   = 4'b0001 << calc_store_addr[1:0];  // Enable only one byte
             store_data_to_dmem = {4{rs2_data[7:0]}};  // Replicate the byte
           end
 
-          3'b001: begin  // sh - store halfword (16-bit)
+          3'b001: begin  // sh 
             case (calc_store_addr[1:0])
               2'd0: store_we_to_dmem = 4'b0011;  // Write lower halfword
               2'd2: store_we_to_dmem = 4'b1100;  // Write upper halfword
@@ -712,7 +691,7 @@ module DatapathSingleCycle (
             store_data_to_dmem = {2{rs2_data[15:0]}};  // Replicate the halfword
           end
 
-          3'b010: begin  // sw - store word (32-bit)
+          3'b010: begin  // sw 
             store_we_to_dmem   = 4'b1111;  // Enable all four bytes
             store_data_to_dmem = rs2_data;  // Store entire word
           end
@@ -723,32 +702,26 @@ module DatapathSingleCycle (
         endcase
       end
 
-
-
-
+      // jal command
       OpJal: begin
-
         rf_we      = 1'b1;
         rf_rd      = insn_rd;
         rf_rd_data = pcCurrent + 4;
         pcNext     = pcCurrent + imm_j_sext;
-
-
       end
 
+      // jalr
       OpJalr: begin
-
         rf_we      = 1'b1;
         rf_rd      = insn_rd;
         rf_rd_data = pcCurrent + 4;
         pcNext     = (rs1_data + imm_i_sext) & 32'hFFFFFFFE;
-
       end
 
+      // fence
       OpMiscMem: begin
         pcNext = pcCurrent + 4;
       end
-
 
       default: begin
         illegal_insn = 1'b1;
@@ -763,7 +736,6 @@ module DatapathSingleCycle (
       pcCurrent <= pcNext;
     end
   end
-  // assign pc_to_imem = pcCurrent;
 
 endmodule
 
