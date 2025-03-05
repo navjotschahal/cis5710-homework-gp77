@@ -50,3 +50,5 @@ sim.wdb
 
 # python
 __pycache__/
+
+.DS_Store
