@@ -9,7 +9,7 @@ module MyClockGen (
 	output wire clk_mem;
 	output wire locked;
 	wire clkfb;
-	(* FREQUENCY_PIN_CLKI = "25" *) (* FREQUENCY_PIN_CLKOP = "10" *) (* FREQUENCY_PIN_CLKOS = "10" *) (* ICP_CURRENT = "12" *) (* LPF_RESISTOR = "8" *) (* MFG_ENABLE_FILTEROPAMP = "1" *) (* MFG_GMCREF_SEL = "2" *) EHXPLLL #(
+	(* FREQUENCY_PIN_CLKI = "25" *) (* FREQUENCY_PIN_CLKOP = "4.16667" *) (* FREQUENCY_PIN_CLKOS = "4.01003" *) (* ICP_CURRENT = "12" *) (* LPF_RESISTOR = "8" *) (* MFG_ENABLE_FILTEROPAMP = "1" *) (* MFG_GMCREF_SEL = "2" *) EHXPLLL #(
 		.PLLRST_ENA("DISABLED"),
 		.INTFB_WAKE("DISABLED"),
 		.STDBY_ENABLE("DISABLED"),
@@ -18,17 +18,17 @@ module MyClockGen (
 		.OUTDIVIDER_MUXB("DIVB"),
 		.OUTDIVIDER_MUXC("DIVC"),
 		.OUTDIVIDER_MUXD("DIVD"),
-		.CLKI_DIV(5),
+		.CLKI_DIV(6),
 		.CLKOP_ENABLE("ENABLED"),
-		.CLKOP_DIV(60),
-		.CLKOP_CPHASE(30),
+		.CLKOP_DIV(128),
+		.CLKOP_CPHASE(64),
 		.CLKOP_FPHASE(0),
 		.CLKOS_ENABLE("ENABLED"),
-		.CLKOS_DIV(60),
-		.CLKOS_CPHASE(45),
-		.CLKOS_FPHASE(0),
+		.CLKOS_DIV(133),
+		.CLKOS_CPHASE(97),
+		.CLKOS_FPHASE(2),
 		.FEEDBK_PATH("INT_OP"),
-		.CLKFB_DIV(2)
+		.CLKFB_DIV(1)
 	) pll_i(
 		.RST(1'b0),
 		.STDBY(1'b0),
@@ -46,6 +46,77 @@ module MyClockGen (
 		.ENCLKOP(1'b0),
 		.LOCK(locked)
 	);
+endmodule
+module divider_unsigned (
+	i_dividend,
+	i_divisor,
+	o_remainder,
+	o_quotient
+);
+	input wire [31:0] i_dividend;
+	input wire [31:0] i_divisor;
+	output wire [31:0] o_remainder;
+	output wire [31:0] o_quotient;
+	wire [31:0] temp_dividend [0:32];
+	wire [31:0] temp_remainder [0:32];
+	wire [31:0] temp_quotient [0:32];
+	assign temp_dividend[0] = i_dividend;
+	assign temp_remainder[0] = 32'b00000000000000000000000000000000;
+	assign temp_quotient[0] = 32'b00000000000000000000000000000000;
+	genvar _gv_i_1;
+	generate
+		for (_gv_i_1 = 0; _gv_i_1 < 32; _gv_i_1 = _gv_i_1 + 1) begin : divu_iter_block
+			localparam i = _gv_i_1;
+			divu_1iter iter(
+				.i_dividend(temp_dividend[i]),
+				.i_divisor(i_divisor),
+				.i_remainder(temp_remainder[i]),
+				.i_quotient(temp_quotient[i]),
+				.o_dividend(temp_dividend[i + 1]),
+				.o_remainder(temp_remainder[i + 1]),
+				.o_quotient(temp_quotient[i + 1])
+			);
+		end
+	endgenerate
+	assign o_quotient = temp_quotient[32];
+	assign o_remainder = temp_remainder[32];
+endmodule
+module divu_1iter (
+	i_dividend,
+	i_divisor,
+	i_remainder,
+	i_quotient,
+	o_dividend,
+	o_remainder,
+	o_quotient
+);
+	reg _sv2v_0;
+	input wire [31:0] i_dividend;
+	input wire [31:0] i_divisor;
+	input wire [31:0] i_remainder;
+	input wire [31:0] i_quotient;
+	output wire [31:0] o_dividend;
+	output wire [31:0] o_remainder;
+	output wire [31:0] o_quotient;
+	reg [31:0] temp_remainder;
+	reg [31:0] temp_quotient;
+	reg [31:0] temp_dividend;
+	always @(*) begin
+		if (_sv2v_0)
+			;
+		temp_remainder = (i_remainder << 1) | (i_dividend >> 31);
+		temp_dividend = i_dividend << 1;
+		if (temp_remainder < i_divisor)
+			temp_quotient = i_quotient << 1;
+		else begin
+			temp_remainder = temp_remainder - i_divisor;
+			temp_quotient = (i_quotient << 1) | 1;
+		end
+	end
+	assign o_dividend = temp_dividend;
+	assign o_remainder = temp_remainder;
+	assign o_quotient = temp_quotient;
+	initial _sv2v_0 = 0;
 endmodule
 module gp4 (
 	gin,
@@ -210,7 +281,7 @@ module RegFile (
 	input wire rst;
 	localparam signed [31:0] NumRegs = 32;
 	reg [31:0] regs [0:31];
-	always @(posedge clk or posedge rst)
+	always @(posedge clk)
 		if (rst) begin : sv2v_autoblock_1
 			reg signed [31:0] i;
 			for (i = 0; i < NumRegs; i = i + 1)
@@ -243,10 +314,10 @@ module DatapathSingleCycle (
 	output reg halt;
 	output wire [31:0] pc_to_imem;
 	input wire [31:0] insn_from_imem;
-	output wire [31:0] addr_to_dmem;
+	output reg [31:0] addr_to_dmem;
 	input wire [31:0] load_data_from_dmem;
-	output wire [31:0] store_data_to_dmem;
-	output wire [3:0] store_we_to_dmem;
+	output reg [31:0] store_data_to_dmem;
+	output reg [3:0] store_we_to_dmem;
 	wire [6:0] insn_funct7;
 	wire [4:0] insn_rs2;
 	wire [4:0] insn_rs1;
@@ -330,7 +401,7 @@ module DatapathSingleCycle (
 	wire insn_fence = insn_opcode == OpMiscMem;
 	reg [31:0] pcNext;
 	reg [31:0] pcCurrent;
-	always @(posedge clk or posedge rst)
+	always @(posedge clk)
 		if (rst)
 			pcCurrent <= 32'd0;
 		else
@@ -338,14 +409,15 @@ module DatapathSingleCycle (
 	assign pc_to_imem = pcCurrent;
 	reg [31:0] cycles_current;
 	reg [31:0] num_insns_current;
-	always @(posedge clk or posedge rst)
+	always @(posedge clk)
 		if (rst) begin
 			cycles_current <= 0;
 			num_insns_current <= 0;
 		end
 		else begin
 			cycles_current <= cycles_current + 1;
-			num_insns_current <= num_insns_current + 1;
+			if (!rst)
+				num_insns_current <= num_insns_current + 1;
 		end
 	wire [31:0] rs1_data;
 	wire [31:0] rs2_data;
@@ -381,6 +453,30 @@ module DatapathSingleCycle (
 		.cin(1'b0),
 		.sum(cla_sum)
 	);
+	wire [31:0] divu_quotient;
+	wire [31:0] divu_remainder;
+	divider_unsigned u_divider(
+		.i_dividend(rs1_data),
+		.i_divisor(rs2_data),
+		.o_quotient(divu_quotient),
+		.o_remainder(divu_remainder)
+	);
+	wire [31:0] signed_dividend = (rs1_data[31] ? ~rs1_data + 32'd1 : rs1_data);
+	wire [31:0] signed_divisor = (rs2_data[31] ? ~rs2_data + 32'd1 : rs2_data);
+	wire [31:0] s_div_quotient;
+	wire [31:0] s_div_remainder;
+	divider_unsigned u_signed_divider(
+		.i_dividend(signed_dividend),
+		.i_divisor(signed_divisor),
+		.o_quotient(s_div_quotient),
+		.o_remainder(s_div_remainder)
+	);
+	wire [31:0] calc_addr = rs1_data + imm_i_sext;
+	wire [31:0] calc_store_addr = rs1_data + imm_s_sext;
+	wire signed [63:0] mul_signed_prod = $signed({{32 {rs1_data[31]}}, rs1_data}) * $signed({{32 {rs2_data[31]}}, rs2_data});
+	wire signed [63:0] mulhsu_prod = $signed({{32 {rs1_data[31]}}, rs1_data}) * $unsigned({32'b00000000000000000000000000000000, rs2_data});
+	wire [63:0] mulhu_prod = {32'b00000000000000000000000000000000, rs1_data} * {32'b00000000000000000000000000000000, rs2_data};
+	wire signed [63:0] prod;
 	reg illegal_insn;
 	always @(*) begin
 		if (_sv2v_0)
@@ -391,11 +487,19 @@ module DatapathSingleCycle (
 		rf_rd_data = 0;
 		halt = 1'b0;
 		pcNext = pcCurrent + 4;
+		addr_to_dmem = 32'd0;
+		store_we_to_dmem = 4'b0000;
+		store_data_to_dmem = 32'd0;
 		case (insn_opcode)
 			OpLui: begin
 				rf_we = 1'b1;
 				rf_rd = insn_rd;
 				rf_rd_data = {insn_from_imem[31:12], 12'b000000000000};
+			end
+			OpAuipc: begin
+				rf_we = 1'b1;
+				rf_rd = insn_rd;
+				rf_rd_data = pcCurrent + {insn_from_imem[31:12], 12'b000000000000};
 			end
 			OpRegImm:
 				case (insn_funct3)
@@ -453,83 +557,140 @@ module DatapathSingleCycle (
 					default: illegal_insn = 1'b1;
 				endcase
 			OpRegReg:
-				case (insn_funct3)
-					3'b000:
-						if (insn_from_imem[31:25] == 7'd0) begin
-							rf_we = 1'b1;
-							rf_rd = insn_rd;
-							rf_rd_data = cla_sum;
-						end
-						else if (insn_from_imem[31:25] == 7'b0100000) begin
-							rf_we = 1'b1;
-							rf_rd = insn_rd;
-							rf_rd_data = cla_sum;
-						end
-						else
-							illegal_insn = 1'b1;
-					3'b001:
-						if (insn_from_imem[31:25] == 7'd0) begin
-							rf_we = 1'b1;
-							rf_rd = insn_rd;
-							rf_rd_data = rs1_data << rs2_data[4:0];
-						end
-						else
-							illegal_insn = 1'b1;
-					3'b010:
-						if (insn_from_imem[31:25] == 7'd0) begin
-							rf_we = 1'b1;
-							rf_rd = insn_rd;
-							rf_rd_data = ($signed(rs1_data) < $signed(rs2_data) ? 32'd1 : 32'd0);
-						end
-						else
-							illegal_insn = 1'b1;
-					3'b011:
-						if (insn_from_imem[31:25] == 7'd0) begin
-							rf_we = 1'b1;
-							rf_rd = insn_rd;
-							rf_rd_data = (rs1_data < rs2_data ? 32'd1 : 32'd0);
-						end
-						else
-							illegal_insn = 1'b1;
-					3'b100:
-						if (insn_from_imem[31:25] == 7'd0) begin
-							rf_we = 1'b1;
-							rf_rd = insn_rd;
-							rf_rd_data = rs1_data ^ rs2_data;
-						end
-						else
-							illegal_insn = 1'b1;
-					3'b101:
-						if (insn_from_imem[31:25] == 7'd0) begin
-							rf_we = 1'b1;
-							rf_rd = insn_rd;
-							rf_rd_data = rs1_data >> rs2_data[4:0];
-						end
-						else if (insn_from_imem[31:25] == 7'b0100000) begin
-							rf_we = 1'b1;
-							rf_rd = insn_rd;
-							rf_rd_data = $signed(rs1_data) >>> rs2_data[4:0];
-						end
-						else
-							illegal_insn = 1'b1;
-					3'b110:
-						if (insn_from_imem[31:25] == 7'd0) begin
-							rf_we = 1'b1;
-							rf_rd = insn_rd;
-							rf_rd_data = rs1_data | rs2_data;
-						end
-						else
-							illegal_insn = 1'b1;
-					3'b111:
-						if (insn_from_imem[31:25] == 7'd0) begin
-							rf_we = 1'b1;
-							rf_rd = insn_rd;
-							rf_rd_data = rs1_data & rs2_data;
-						end
-						else
-							illegal_insn = 1'b1;
-					default: illegal_insn = 1'b1;
-				endcase
+				if (insn_mul) begin
+					rf_we = 1'b1;
+					rf_rd = insn_rd;
+					rf_rd_data = mul_signed_prod[31:0];
+				end
+				else if (insn_mulh) begin
+					rf_we = 1'b1;
+					rf_rd = insn_rd;
+					rf_rd_data = mul_signed_prod[63:32];
+				end
+				else if (insn_mulhsu) begin
+					rf_we = 1'b1;
+					rf_rd = insn_rd;
+					rf_rd_data = mulhsu_prod[63:32];
+				end
+				else if (insn_mulhu) begin
+					rf_we = 1'b1;
+					rf_rd = insn_rd;
+					rf_rd_data = mulhu_prod[63:32];
+				end
+				else if (insn_div) begin
+					rf_we = 1'b1;
+					rf_rd = insn_rd;
+					if (rs2_data == 32'd0)
+						rf_rd_data = 32'hffffffff;
+					else if ((rs1_data == 32'h80000000) && (rs2_data == 32'hffffffff))
+						rf_rd_data = 32'h80000000;
+					else
+						rf_rd_data = (rs1_data[31] ^ rs2_data[31] ? ~s_div_quotient + 32'd1 : s_div_quotient);
+				end
+				else if (insn_divu) begin
+					rf_we = 1'b1;
+					rf_rd = insn_rd;
+					if (rs2_data == 32'd0)
+						rf_rd_data = 32'hffffffff;
+					else
+						rf_rd_data = divu_quotient;
+				end
+				else if (insn_rem) begin
+					rf_we = 1'b1;
+					rf_rd = insn_rd;
+					if (rs2_data == 32'd0)
+						rf_rd_data = rs1_data;
+					else if ((rs1_data == 32'h80000000) && (rs2_data == 32'hffffffff))
+						rf_rd_data = 32'd0;
+					else
+						rf_rd_data = (rs1_data[31] ? ~s_div_remainder + 32'd1 : s_div_remainder);
+				end
+				else if (insn_remu) begin
+					rf_we = 1'b1;
+					rf_rd = insn_rd;
+					if (rs2_data == 32'd0)
+						rf_rd_data = rs1_data;
+					else
+						rf_rd_data = divu_remainder;
+				end
+				else
+					case (insn_funct3)
+						3'b000:
+							if (insn_from_imem[31:25] == 7'd0) begin
+								rf_we = 1'b1;
+								rf_rd = insn_rd;
+								rf_rd_data = cla_sum;
+							end
+							else if (insn_from_imem[31:25] == 7'b0100000) begin
+								rf_we = 1'b1;
+								rf_rd = insn_rd;
+								rf_rd_data = cla_sum;
+							end
+							else
+								illegal_insn = 1'b1;
+						3'b001:
+							if (insn_from_imem[31:25] == 7'd0) begin
+								rf_we = 1'b1;
+								rf_rd = insn_rd;
+								rf_rd_data = rs1_data << rs2_data[4:0];
+							end
+							else
+								illegal_insn = 1'b1;
+						3'b010:
+							if (insn_from_imem[31:25] == 7'd0) begin
+								rf_we = 1'b1;
+								rf_rd = insn_rd;
+								rf_rd_data = ($signed(rs1_data) < $signed(rs2_data) ? 32'd1 : 32'd0);
+							end
+							else
+								illegal_insn = 1'b1;
+						3'b011:
+							if (insn_from_imem[31:25] == 7'd0) begin
+								rf_we = 1'b1;
+								rf_rd = insn_rd;
+								rf_rd_data = (rs1_data < rs2_data ? 32'd1 : 32'd0);
+							end
+							else
+								illegal_insn = 1'b1;
+						3'b100:
+							if (insn_from_imem[31:25] == 7'd0) begin
+								rf_we = 1'b1;
+								rf_rd = insn_rd;
+								rf_rd_data = rs1_data ^ rs2_data;
+							end
+							else
+								illegal_insn = 1'b1;
+						3'b101:
+							if (insn_from_imem[31:25] == 7'd0) begin
+								rf_we = 1'b1;
+								rf_rd = insn_rd;
+								rf_rd_data = rs1_data >> rs2_data[4:0];
+							end
+							else if (insn_from_imem[31:25] == 7'b0100000) begin
+								rf_we = 1'b1;
+								rf_rd = insn_rd;
+								rf_rd_data = $signed(rs1_data) >>> rs2_data[4:0];
+							end
+							else
+								illegal_insn = 1'b1;
+						3'b110:
+							if (insn_from_imem[31:25] == 7'd0) begin
+								rf_we = 1'b1;
+								rf_rd = insn_rd;
+								rf_rd_data = rs1_data | rs2_data;
+							end
+							else
+								illegal_insn = 1'b1;
+						3'b111:
+							if (insn_from_imem[31:25] == 7'd0) begin
+								rf_we = 1'b1;
+								rf_rd = insn_rd;
+								rf_rd_data = rs1_data & rs2_data;
+							end
+							else
+								illegal_insn = 1'b1;
+						default: illegal_insn = 1'b1;
+					endcase
 			OpBranch:
 				case (insn_funct3)
 					3'b000:
@@ -557,10 +718,99 @@ module DatapathSingleCycle (
 					halt = 1'b1;
 				else
 					illegal_insn = 1'b1;
+			OpLoad: begin
+				addr_to_dmem = {calc_addr[31:2], 2'b00};
+				case (insn_funct3)
+					3'b000: begin
+						case (calc_addr[1:0])
+							2'd0: rf_rd_data = {{24 {load_data_from_dmem[7]}}, load_data_from_dmem[7:0]};
+							2'd1: rf_rd_data = {{24 {load_data_from_dmem[15]}}, load_data_from_dmem[15:8]};
+							2'd2: rf_rd_data = {{24 {load_data_from_dmem[23]}}, load_data_from_dmem[23:16]};
+							2'd3: rf_rd_data = {{24 {load_data_from_dmem[31]}}, load_data_from_dmem[31:24]};
+							default: rf_rd_data = 32'd0;
+						endcase
+						rf_we = 1'b1;
+						rf_rd = insn_rd;
+					end
+					3'b001: begin
+						case (calc_addr[1])
+							1'b0: rf_rd_data = {{16 {load_data_from_dmem[15]}}, load_data_from_dmem[15:0]};
+							1'b1: rf_rd_data = {{16 {load_data_from_dmem[31]}}, load_data_from_dmem[31:16]};
+							default: rf_rd_data = 32'd0;
+						endcase
+						rf_we = 1'b1;
+						rf_rd = insn_rd;
+					end
+					3'b010: begin
+						rf_rd_data = load_data_from_dmem;
+						rf_we = 1'b1;
+						rf_rd = insn_rd;
+					end
+					3'b100: begin
+						case (calc_addr[1:0])
+							2'd0: rf_rd_data = {24'd0, load_data_from_dmem[7:0]};
+							2'd1: rf_rd_data = {24'd0, load_data_from_dmem[15:8]};
+							2'd2: rf_rd_data = {24'd0, load_data_from_dmem[23:16]};
+							2'd3: rf_rd_data = {24'd0, load_data_from_dmem[31:24]};
+							default: rf_rd_data = 32'd0;
+						endcase
+						rf_we = 1'b1;
+						rf_rd = insn_rd;
+					end
+					3'b101: begin
+						case (calc_addr[1])
+							1'b0: rf_rd_data = {16'd0, load_data_from_dmem[15:0]};
+							1'b1: rf_rd_data = {16'd0, load_data_from_dmem[31:16]};
+							default: rf_rd_data = 32'd0;
+						endcase
+						rf_we = 1'b1;
+						rf_rd = insn_rd;
+					end
+					default: illegal_insn = 1'b1;
+				endcase
+			end
+			OpStore: begin
+				addr_to_dmem = {calc_store_addr[31:2], 2'b00};
+				case (insn_funct3)
+					3'b000: begin
+						store_we_to_dmem = 4'b0001 << calc_store_addr[1:0];
+						store_data_to_dmem = {4 {rs2_data[7:0]}};
+					end
+					3'b001: begin
+						case (calc_store_addr[1:0])
+							2'd0: store_we_to_dmem = 4'b0011;
+							2'd2: store_we_to_dmem = 4'b1100;
+							default: begin
+								store_we_to_dmem = 4'b0000;
+								illegal_insn = 1'b1;
+							end
+						endcase
+						store_data_to_dmem = {2 {rs2_data[15:0]}};
+					end
+					3'b010: begin
+						store_we_to_dmem = 4'b1111;
+						store_data_to_dmem = rs2_data;
+					end
+					default: illegal_insn = 1'b1;
+				endcase
+			end
+			OpJal: begin
+				rf_we = 1'b1;
+				rf_rd = insn_rd;
+				rf_rd_data = pcCurrent + 4;
+				pcNext = pcCurrent + imm_j_sext;
+			end
+			OpJalr: begin
+				rf_we = 1'b1;
+				rf_rd = insn_rd;
+				rf_rd_data = pcCurrent + 4;
+				pcNext = (rs1_data + imm_i_sext) & 32'hfffffffe;
+			end
+			OpMiscMem: pcNext = pcCurrent + 4;
 			default: illegal_insn = 1'b1;
 		endcase
 	end
-	always @(posedge clk or posedge rst)
+	always @(posedge clk)
 		if (rst)
 			pcCurrent <= 32'd0;
 		else
@@ -594,12 +844,12 @@ module MemorySingleCycle (
 			;
 	localparam signed [31:0] AddrMsb = $clog2(NUM_WORDS) + 1;
 	localparam signed [31:0] AddrLsb = 2;
-	always @(posedge clock_mem or posedge rst)
+	always @(posedge clock_mem)
 		if (rst)
-			insn_from_imem <= 32'd0;
+			;
 		else
 			insn_from_imem <= mem_array[{pc_to_imem[AddrMsb:AddrLsb]}];
-	always @(negedge clock_mem or posedge rst)
+	always @(negedge clock_mem)
 		if (rst)
 			;
 		else begin
@@ -616,7 +866,72 @@ module MemorySingleCycle (
 	initial _sv2v_0 = 0;
 endmodule
 `default_nettype none
-module SystemResourceCheck (
+module debouncer (
+	i_clk,
+	i_in,
+	o_debounced,
+	o_debug
+);
+	parameter NIN = 21;
+	parameter LGWAIT = 17;
+	input wire i_clk;
+	input wire [NIN - 1:0] i_in;
+	output reg [NIN - 1:0] o_debounced;
+	output wire [30:0] o_debug;
+	reg different;
+	reg ztimer;
+	reg [NIN - 1:0] r_in;
+	reg [NIN - 1:0] q_in;
+	reg [NIN - 1:0] r_last;
+	reg [LGWAIT - 1:0] timer;
+	initial q_in = 0;
+	initial r_in = 0;
+	initial different = 0;
+	always @(posedge i_clk) q_in <= i_in;
+	always @(posedge i_clk) r_in <= q_in;
+	always @(posedge i_clk) r_last <= r_in;
+	initial ztimer = 1'b1;
+	initial timer = 0;
+	always @(posedge i_clk)
+		if (ztimer && different) begin
+			timer <= {LGWAIT {1'b1}};
+			ztimer <= 1'b0;
+		end
+		else if (!ztimer) begin
+			timer <= timer - 1'b1;
+			ztimer <= timer[LGWAIT - 1:1] == 0;
+		end
+		else begin
+			ztimer <= 1'b1;
+			timer <= 0;
+		end
+	always @(posedge i_clk) different <= (different && !ztimer) || (r_in != o_debounced);
+	initial o_debounced = {NIN {1'b0}};
+	always @(posedge i_clk)
+		if (ztimer)
+			o_debounced <= r_last;
+	reg trigger;
+	initial trigger = 1'b0;
+	always @(posedge i_clk) trigger <= (((!ztimer && !different) && !(|i_in)) && (timer[LGWAIT - 1:2] == 0)) && timer[1];
+	wire [30:0] debug;
+	assign debug[30] = ztimer;
+	assign debug[29] = trigger;
+	assign debug[28] = 1'b0;
+	generate
+		if (NIN >= 14) begin : genblk1
+			assign debug[27:14] = o_debounced[13:0];
+			assign debug[13:0] = r_in[13:0];
+		end
+		else begin : genblk1
+			assign debug[27:14 + NIN] = 0;
+			assign debug[(14 + NIN) - 1:14] = o_debounced;
+			assign debug[13:NIN] = 0;
+			assign debug[NIN - 1:0] = r_in;
+		end
+	endgenerate
+	assign o_debug = debug;
+endmodule
+module SystemDemo (
 	external_clk_25MHz,
 	btn,
 	led
@@ -624,7 +939,17 @@ module SystemResourceCheck (
 	input wire external_clk_25MHz;
 	input wire [6:0] btn;
 	output wire [7:0] led;
+	localparam signed [31:0] MmapButtons = 32'hff001000;
+	localparam signed [31:0] MmapLeds = 32'hff002000;
+	wire rst_button_n;
+	wire [30:0] ignore;
 	wire clk_proc;
+	debouncer #(.NIN(1)) db(
+		.i_clk(clk_proc),
+		.i_in(btn[0]),
+		.o_debounced(rst_button_n),
+		.o_debug(ignore)
+	);
 	wire clk_mem;
 	wire clk_locked;
 	MyClockGen clock_gen(
@@ -633,31 +958,40 @@ module SystemResourceCheck (
 		.clk_mem(clk_mem),
 		.locked(clk_locked)
 	);
+	wire rst = !rst_button_n || !clk_locked;
 	wire [31:0] pc_to_imem;
 	wire [31:0] insn_from_imem;
 	wire [31:0] mem_data_addr;
 	wire [31:0] mem_data_loaded_value;
 	wire [31:0] mem_data_to_write;
 	wire [3:0] mem_data_we;
-	MemorySingleCycle #(.NUM_WORDS(128)) memory(
-		.rst(!clk_locked),
+	reg [7:0] led_state;
+	assign led = led_state;
+	always @(posedge clk_mem)
+		if (rst)
+			led_state <= 0;
+		else if ((mem_data_addr == MmapLeds) && (mem_data_we[0] == 1))
+			led_state <= mem_data_to_write[7:0];
+	MemorySingleCycle #(.NUM_WORDS(1024)) memory(
+		.rst(rst),
 		.clock_mem(clk_mem),
 		.pc_to_imem(pc_to_imem),
 		.insn_from_imem(insn_from_imem),
 		.addr_to_dmem(mem_data_addr),
 		.load_data_from_dmem(mem_data_loaded_value),
 		.store_data_to_dmem(mem_data_to_write),
-		.store_we_to_dmem(mem_data_we)
+		.store_we_to_dmem((mem_data_addr == MmapLeds ? 4'd0 : mem_data_we))
 	);
+	wire halt;
 	DatapathSingleCycle datapath(
 		.clk(clk_proc),
-		.rst(!clk_locked),
+		.rst(rst),
 		.pc_to_imem(pc_to_imem),
 		.insn_from_imem(insn_from_imem),
 		.addr_to_dmem(mem_data_addr),
 		.store_data_to_dmem(mem_data_to_write),
 		.store_we_to_dmem(mem_data_we),
-		.load_data_from_dmem(mem_data_loaded_value),
-		.halt(led[0])
+		.load_data_from_dmem((mem_data_addr == MmapButtons ? {25'd0, btn} : mem_data_loaded_value)),
+		.halt(halt)
 	);
 endmodule

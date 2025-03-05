@@ -14,73 +14,71 @@ module DividerUnsignedPipelined (
 
     // TODO: your code here
 
+    logic [31:0] divisor_reg;
 
 // Pipeline registers
-    logic [31:0] dividend_pipeline [0:7];
-    logic [31:0] remainder_pipeline [0:7];
-    logic [31:0] quotient_pipeline [0:7];
-    logic [31:0] divisor_pipeline [0:7]; 
+    logic [31:0] dividend_pipeline [0:8];
+    logic [31:0] remainder_pipeline [0:8];
+    logic [31:0] quotient_pipeline [0:8];
+    // logic [31:0] divisor_pipeline [0:8]; 
     
     // Intermediate wires for divu_1iter outputs
-    wire [31:0] next_dividend [0:7];
-    wire [31:0] next_remainder [0:7];
-    wire [31:0] next_quotient [0:7];
-    wire [31:0] next_divisor [0:7];
+    wire [31:0] next_dividend [0:8];
+    wire [31:0] next_remainder [0:8];
+    wire [31:0] next_quotient [0:8];
 
-
-        divu_4iter divu_4iter_ins (
-        .i_dividend(i_dividend),
-        // .i_divisor(divisor_pipeline[i]),
-        .i_divisor(i_divisor),
-        .i_remainder(32'b0),
-        .i_quotient(32'b0),
-        .o_dividend(next_dividend[0]),
-        .o_remainder(next_remainder[0]),
-        .o_quotient(next_quotient[0]),
-        .o_divisor(next_divisor[0])
-    );
-
-
-    
+    // Initial values
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst) begin
+            dividend_pipeline[0] <= 32'b0;
+            remainder_pipeline[0] <= 32'b0;
+            quotient_pipeline[0] <= 32'b0;
+            // divisor_pipeline[0] <= 32'b0; 
+            divisor_reg <= 32'b0;
+        end else if (!stall) begin
+            dividend_pipeline[0] <= i_dividend;
+            remainder_pipeline[0] <= 32'b0;
+            quotient_pipeline[0] <= 32'b0;
+            // divisor_pipeline[0] <= i_divisor; 
+            divisor_reg <= i_divisor;
+        end
+    end
 
     // Pipeline stages
     genvar i;
-    generate
-        for (i = 1; i < 8; i++) begin : pipeline_stages
+generate
+    for (i = 0; i < 8; i++) begin : pipeline_stages
 
-            divu_4iter divu_4iter_ins (
-                .i_dividend(dividend_pipeline[i]),
-                // .i_divisor(divisor_pipeline[i]),
-                .i_divisor(divisor_pipeline[i]),
-                .i_remainder(remainder_pipeline[i]),
-                .i_quotient(quotient_pipeline[i]),
-                .o_dividend(next_dividend[i]),
-                .o_remainder(next_remainder[i]),
-                .o_quotient(next_quotient[i]),
-                .o_divisor(next_divisor[i])
-            );
-        end
+        divu_4iter divu_4iter_ins (
+            .i_dividend(dividend_pipeline[i]),
+            // .i_divisor(divisor_pipeline[i]),
+            .i_divisor(divisor_reg),
+            .i_remainder(remainder_pipeline[i]),
+            .i_quotient(quotient_pipeline[i]),
+            .o_dividend(next_dividend[i]),
+            .o_remainder(next_remainder[i]),
+            .o_quotient(next_quotient[i])
+        );
+    end
+endgenerate
 
-    endgenerate
-
-    always_ff @(posedge clk or posedge rst) begin
-        integer j ;
-        for (j = 0; j < 7; j++) begin
-            if (rst) begin
-                dividend_pipeline[j+1] <= 32'b0;
-                remainder_pipeline[j+1] <= 32'b0;
-                quotient_pipeline[j+1] <= 32'b0;
-            end else if (!stall) begin
-                dividend_pipeline[j+1] <= next_dividend[j];
-                remainder_pipeline[j+1] <= next_remainder[j];
-                quotient_pipeline[j+1] <= next_quotient[j];
-                divisor_pipeline[j+1] <= next_divisor[j];
+        always_ff @(posedge clk or posedge rst) begin
+            integer j ;
+            for (j = 0; j < 8; j++) begin
+                if (rst) begin
+                    dividend_pipeline[j+1] <= 32'b0;
+                    remainder_pipeline[j+1] <= 32'b0;
+                    quotient_pipeline[j+1] <= 32'b0;
+                end else if (!stall) begin
+                    dividend_pipeline[j+1] <= next_dividend[j];
+                    remainder_pipeline[j+1] <= next_remainder[j];
+                    quotient_pipeline[j+1] <= next_quotient[j];
+                end
             end
         end
-    end
     // Output assignments
-    assign o_quotient = next_quotient[7];
-    assign o_remainder = next_remainder[7];
+    assign o_quotient = quotient_pipeline[8];
+    assign o_remainder = remainder_pipeline[8];
 endmodule
 
 
@@ -114,8 +112,7 @@ module divu_4iter (
     input  wire [31:0] i_quotient,
     output wire [31:0] o_dividend,
     output wire [31:0] o_remainder,
-    output wire [31:0] o_quotient,
-    output wire [31:0] o_divisor
+    output wire [31:0] o_quotient
 );
 
     wire [31:0] dividend_stage [0:4];
@@ -144,6 +141,5 @@ module divu_4iter (
     assign o_dividend = dividend_stage[4];
     assign o_remainder = remainder_stage[4];
     assign o_quotient = quotient_stage[4];
-    assign o_divisor = i_divisor;
 
 endmodule
