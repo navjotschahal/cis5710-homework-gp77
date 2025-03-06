@@ -186,11 +186,21 @@ module DatapathMultiCycle (
 
   // program counter
   logic [`REG_SIZE] pcNext, pcCurrent;
+
+  // Counter for divide operations
+  logic [2:0] div_counter;
+  logic div_in_progress;
+
   always @(posedge clk) begin
     if (rst) begin
       pcCurrent <= 32'd0;
     end else begin
-      pcCurrent <= pcNext;
+      if (div_in_progress) begin
+        div_counter <= div_counter + 3'd1;
+      end else begin
+        pcCurrent <= pcNext;
+        div_counter <= 3'd0;
+      end
     end
   end
   assign pc_to_imem = pcCurrent;
@@ -298,6 +308,8 @@ module DatapathMultiCycle (
       .o_remainder(s_div_remainder)
   );
 
+ 
+
   // for store and load operations 
   wire [31:0] calc_addr = rs1_data + imm_i_sext;
   wire [31:0] calc_store_addr = rs1_data + imm_s_sext;
@@ -331,6 +343,13 @@ module DatapathMultiCycle (
     addr_to_dmem = 32'd0;
     store_we_to_dmem = 4'b0000;
     store_data_to_dmem = 32'd0;
+    div_in_progress = 1'b0;
+
+    // if (div_in_progress) begin
+    //       rf_we = 1'b0;  // Default to no write
+
+    //   pcNext = pcCurrent;
+    // end else begin
 
     case (insn_opcode)
       OpLui: begin
@@ -441,6 +460,12 @@ module DatapathMultiCycle (
           // division
         end else if (insn_div) begin
           // DIV
+          if(div_counter == 3'd7) begin 
+              div_in_progress = 1'b0;
+            end 
+            else begin 
+              div_in_progress = 1'b1;
+            end
           rf_we = 1'b1;
           rf_rd = insn_rd;
           if (rs2_data == 32'd0) begin
@@ -455,6 +480,12 @@ module DatapathMultiCycle (
           end
         end else if (insn_divu) begin
           // DIVU
+          if(div_counter == 3'd7) begin 
+              div_in_progress = 1'b0;
+            end 
+            else begin 
+              div_in_progress = 1'b1;
+            end
           rf_we = 1'b1;
           rf_rd = insn_rd;
           if (rs2_data == 32'd0) begin
@@ -466,6 +497,12 @@ module DatapathMultiCycle (
           // rem operations
         end else if (insn_rem) begin
           // REM
+          if(div_counter == 3'd7) begin 
+              div_in_progress = 1'b0;
+            end 
+            else begin 
+              div_in_progress = 1'b1;
+            end
           rf_we = 1'b1;
           rf_rd = insn_rd;
           if (rs2_data == 32'd0) begin
@@ -478,6 +515,12 @@ module DatapathMultiCycle (
           end
         end else if (insn_remu) begin
           // REMU
+          if(div_counter == 3'd7) begin 
+              div_in_progress = 1'b0;
+            end 
+            else begin 
+              div_in_progress = 1'b1;
+            end
           rf_we = 1'b1;
           rf_rd = insn_rd;
           if (rs2_data == 32'd0) begin
@@ -753,15 +796,19 @@ module DatapathMultiCycle (
         illegal_insn = 1'b1;
       end
     endcase
+    // end
   end
 
-  always_ff @(posedge clk) begin
-    if (rst) begin
-      pcCurrent <= 32'd0;
-    end else begin
-      pcCurrent <= pcNext;
-    end
-  end
+  // always_ff @(posedge clk) begin
+  //   if (rst) begin
+  //     pcCurrent <= 32'd0;
+  //   end
+  //   else begin
+  //     if (!div_in_progress) begin
+  //     pcCurrent <= pcNext;
+  //     end
+  //   end
+  // end
 
 endmodule
 

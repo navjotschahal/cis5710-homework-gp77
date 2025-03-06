@@ -63,7 +63,7 @@ module DividerUnsignedPipelined (
 
     endgenerate
 
-    always_ff @(posedge clk or posedge rst) begin
+    always_ff @(posedge clk) begin
         integer j ;
         for (j = 0; j < 7; j++) begin
             if (rst) begin
