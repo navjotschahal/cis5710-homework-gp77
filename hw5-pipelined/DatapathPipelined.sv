@@ -62,9 +62,6 @@ module RegFile (
 
   // TODO: your code here
 
-
-  // Regfile implementation
-
   // Write logic - synchronous to clock
   always_ff @(posedge clk) begin
     if (rst) begin
@@ -79,7 +76,6 @@ module RegFile (
   end
 
   // Read logic with WD bypass implementation
-  // This handles the case where a register is being written and read in the same cycle
   always_comb begin
     // For rs1
     if (rs1 == 5'd0) begin
@@ -102,11 +98,7 @@ module RegFile (
       rs2_data = regs[rs2];
     end
   end
-
 endmodule
-
-
-/////////////////////// 
 
 /** state at the start of Decode stage */
 typedef struct packed {
@@ -201,8 +193,6 @@ module DatapathPipelined (
   /* FETCH STAGE */
   /***************/
 
-
-
   // Fetch stage registers and wires
   logic [`REG_SIZE] f_pc_current;
   logic [`REG_SIZE] f_pc_next;
@@ -247,50 +237,6 @@ module DatapathPipelined (
       .disasm(f_disasm)
   );
 
-  // // Control signals from other stages
-  // logic                      e_branch_taken;  // From Execute stage - branch condition true
-  // logic          [`REG_SIZE] e_branch_target;  // From Execute stage - branch target address
-  // logic                      d_stall;  // From Decode stage - stall signal
-
-  // // Fetch stage registers and wires
-  // logic          [`REG_SIZE] f_pc_current;
-  // logic          [`REG_SIZE] f_pc_next;
-  // wire           [`REG_SIZE] f_insn;
-  // cycle_status_e             f_cycle_status;
-
-  // // Calculate next PC value
-  // always_comb begin
-  //   if (e_branch_taken)
-  //     // When branch taken, use branch target from Execute stage
-  //     f_pc_next = e_branch_target;
-  //   else if (d_stall)
-  //     // When stalling, maintain current PC
-  //     f_pc_next = f_pc_current;
-  //   else
-  //     // Normal sequential execution
-  //     f_pc_next = f_pc_current + 4;
-  // end
-
-  // // Program counter update logic
-  // always_ff @(posedge clk) begin
-  //   if (rst) begin
-  //     f_pc_current   <= 32'd0;
-  //     f_cycle_status <= CYCLE_NO_STALL;
-  //   end else begin
-  //     // Update PC
-  //     f_pc_current <= f_pc_next;
-
-  //     // Update cycle status
-  //     if (e_branch_taken) f_cycle_status <= CYCLE_BRANCH_FLUSH;
-  //     else if (d_stall) f_cycle_status <= CYCLE_STALL;
-  //     else f_cycle_status <= CYCLE_NO_STALL;
-  //   end
-  // end
-  // // send PC to imem
-  // assign pc_to_imem = f_pc_current;
-  // assign f_insn = insn_from_imem;
-
-
   // // Here's how to disassemble an insn into a string you can view in GtkWave.
   // // Use PREFIX to provide a 1-character tag to identify which stage the insn comes from.
   // wire [255:0] f_disasm;
@@ -326,138 +272,6 @@ module DatapathPipelined (
 
   // TODO: your code here, though you will also need to modify some of the code above
   // TODO: the testbench requires that your register file instance is named `rf`
-
-  // // Define struct for Execute stage input
-  // typedef struct packed {
-  //   logic [`REG_SIZE] pc;
-  //   logic [`INSN_SIZE] insn;
-  //   logic [`REG_SIZE] rs1_data;
-  //   logic [`REG_SIZE] rs2_data;
-  //   logic [4:0] rs1_addr;
-  //   logic [4:0] rs2_addr;
-  //   logic [4:0] rd_addr;
-  //   logic write_rd;
-  //   cycle_status_e cycle_status;
-  // } stage_execute_t;
-
-  // // Extract instruction fields
-  // logic [4:0] d_rs1;
-  // logic [4:0] d_rs2;
-  // logic [4:0] d_rd;
-  // logic [2:0] d_funct3;
-  // logic [6:0] d_funct7;
-  // logic [`OPCODE_SIZE] d_opcode;
-  // logic [`REG_SIZE] d_imm_i;
-  // logic [`REG_SIZE] d_imm_s;
-  // logic [`REG_SIZE] d_imm_b;
-  // logic [`REG_SIZE] d_imm_u;
-  // logic [`REG_SIZE] d_imm_j;
-
-  // always_comb begin
-  //   // Parse instruction fields
-  //   d_opcode = decode_state.insn[6:0];
-  //   d_rd = decode_state.insn[11:7];
-  //   d_funct3 = decode_state.insn[14:12];
-  //   d_rs1 = decode_state.insn[19:15];
-  //   d_rs2 = decode_state.insn[24:20];
-  //   d_funct7 = decode_state.insn[31:25];
-
-  //   // Generate immediates for different instruction formats
-  //   d_imm_i = {{20{decode_state.insn[31]}}, decode_state.insn[31:20]};
-  //   d_imm_s = {{20{decode_state.insn[31]}}, decode_state.insn[31:25], decode_state.insn[11:7]};
-  //   d_imm_b = {
-  //     {19{decode_state.insn[31]}},
-  //     decode_state.insn[31],
-  //     decode_state.insn[7],
-  //     decode_state.insn[30:25],
-  //     decode_state.insn[11:8],
-  //     1'b0
-  //   };
-  //   d_imm_u = {decode_state.insn[31:12], 12'b0};
-  //   d_imm_j = {
-  //     {11{decode_state.insn[31]}},
-  //     decode_state.insn[31],
-  //     decode_state.insn[19:12],
-  //     decode_state.insn[20],
-  //     decode_state.insn[30:21],
-  //     1'b0
-  //   };
-  // end
-
-  // // Determine if we write to register file
-  // logic d_write_rd;
-  // always_comb begin
-  //   case (d_opcode)
-  //     OpcodeRegImm, OpcodeRegReg, OpcodeLui, OpcodeAuipc, OpcodeJal, OpcodeJalr: d_write_rd = 1'b1;
-  //     default: d_write_rd = 1'b0;
-  //   endcase
-  // end
-
-  // // Register file connections
-  // logic [`REG_SIZE] d_rs1_data;
-  // logic [`REG_SIZE] d_rs2_data;
-  // logic w_write_rd;  // From writeback stage
-  // logic [4:0] w_rd_addr;  // From writeback stage
-  // logic [`REG_SIZE] w_rd_data;  // From writeback stage
-
-  // // Register file instance as required by testbench
-  // RegFile rf (
-  //     .clk(clk),
-  //     .rst(rst),
-  //     .we(w_write_rd),
-  //     .rd(w_rd_addr),
-  //     .rd_data(w_rd_data),
-  //     .rs1(d_rs1),
-  //     .rs1_data(d_rs1_data),
-  //     .rs2(d_rs2),
-  //     .rs2_data(d_rs2_data)
-  // );
-
-  // // For milestone 1, modify decode_state update to handle branch flushes
-  // // (This would replace your existing always_ff block for decode_state)
-  // always_ff @(posedge clk) begin
-  //   if (rst) begin
-  //     decode_state <= '{pc: 0, insn: 0, cycle_status: CYCLE_RESET};
-  //   end else if (e_branch_taken) begin
-  //     // Insert bubble if branch taken (pipeline flush)
-  //     decode_state <= '{pc: 0, insn: 0, cycle_status: CYCLE_FLUSH};
-  //   end else begin
-  //     decode_state <= '{pc: f_pc_current, insn: f_insn, cycle_status: f_cycle_status};
-  //   end
-  // end
-
-  // // Pass decoded state to execute stage
-  // stage_execute_t execute_state;
-  // always_ff @(posedge clk) begin
-  //   if (rst || e_branch_taken) begin
-  //     // Reset or branch flush
-  //     execute_state <= '{
-  //         pc: 0,
-  //         insn: 0,
-  //         rs1_data: 0,
-  //         rs2_data: 0,
-  //         rs1_addr: 0,
-  //         rs2_addr: 0,
-  //         rd_addr: 0,
-  //         write_rd: 0,
-  //         cycle_status: e_branch_taken ? CYCLE_FLUSH : CYCLE_RESET
-  //     };
-  //   end else begin
-  //     // Normal operation
-  //     execute_state <= '{
-  //         pc: decode_state.pc,
-  //         insn: decode_state.insn,
-  //         rs1_data: d_rs1_data,
-  //         rs2_data: d_rs2_data,
-  //         rs1_addr: d_rs1,
-  //         rs2_addr: d_rs2,
-  //         rd_addr: d_rd,
-  //         write_rd: d_write_rd,
-  //         cycle_status: decode_state.cycle_status
-  //     };
-  //   end
-  // end
-
 
   // Register containing state passed from Fetch to Decode
   stage_decode_t decode_state;
@@ -557,7 +371,7 @@ module DatapathPipelined (
   stage_execute_t execute_state;
   always_ff @(posedge clk) begin
     if (rst || e_branch_taken) begin
-      // Reset or branch flush
+      // Reset or branch
       execute_state <= '{
           pc: 0,
           insn: 0,
@@ -606,12 +420,11 @@ module DatapathPipelined (
   logic [`REG_SIZE] e_cla_sum;
   logic [`REG_SIZE] e_cla_b_input;
 
-
-  // CLA adder input logic - similar to the HW4 implementation
+  // CLA adder input logic
   always_comb begin
     case (e_opcode)
       OpcodeRegImm: begin
-        // For I-type instructions like ADDI
+        // For I-type instructions
         e_cla_b_input = e_imm_i;
       end
       OpcodeRegReg: begin
@@ -704,98 +517,6 @@ module DatapathPipelined (
   end
 
   // ALU operation
-  // always_comb begin
-  //   case (e_opcode)
-  //     OpcodeLui: begin
-  //       // LUI just passes immediate to result
-  //       e_alu_result = e_imm_u;
-  //     end
-
-  //     OpcodeRegImm: begin
-  //       // I-type ALU operations
-  //       case (e_funct3)
-  //         3'b000:  e_alu_result = e_rs1_data + e_imm_i;  // ADDI
-  //         3'b010:  e_alu_result = {31'b0, $signed(e_rs1_data) < $signed(e_imm_i)};  // SLTI
-  //         3'b011:  e_alu_result = {31'b0, e_rs1_data < e_imm_i};  // SLTIU
-  //         3'b100:  e_alu_result = e_rs1_data ^ e_imm_i;  // XORI
-  //         3'b110:  e_alu_result = e_rs1_data | e_imm_i;  // ORI
-  //         3'b111:  e_alu_result = e_rs1_data & e_imm_i;  // ANDI
-  //         3'b001:  e_alu_result = e_rs1_data << e_imm_i[4:0];  // SLLI
-  //         3'b101: begin
-  //           if (e_funct7[5]) e_alu_result = $signed(e_rs1_data) >>> e_imm_i[4:0];  // SRAI
-  //           else e_alu_result = e_rs1_data >> e_imm_i[4:0];  // SRLI
-  //         end
-  //         default: e_alu_result = 0;
-  //       endcase
-  //     end
-
-  //     OpcodeRegReg: begin
-  //       // R-type ALU operations
-  //       case (e_funct3)
-  //         3'b000: begin
-  //           if (e_funct7[5]) e_alu_result = e_rs1_data - e_rs2_data;  // SUB
-  //           else e_alu_result = e_rs1_data + e_rs2_data;  // ADD
-  //         end
-  //         3'b001:  e_alu_result = e_rs1_data << e_rs2_data[4:0];  // SLL
-  //         3'b010:  e_alu_result = {31'b0, $signed(e_rs1_data) < $signed(e_rs2_data)};  // SLT
-  //         3'b011:  e_alu_result = {31'b0, e_rs1_data < e_rs2_data};  // SLTU
-  //         3'b100:  e_alu_result = e_rs1_data ^ e_rs2_data;  // XOR
-  //         3'b101: begin
-  //           if (e_funct7[5]) e_alu_result = $signed(e_rs1_data) >>> e_rs2_data[4:0];  // SRA
-  //           else e_alu_result = e_rs1_data >> e_rs2_data[4:0];  // SRL
-  //         end
-  //         3'b110:  e_alu_result = e_rs1_data | e_rs2_data;  // OR
-  //         3'b111:  e_alu_result = e_rs1_data & e_rs2_data;  // AND
-  //         default: e_alu_result = 0;
-  //       endcase
-  //     end
-  //     // PLACEHOLDER for Load instructions (Milestone 2)
-  //     OpcodeLoad: begin
-  //       // For Milestone 1, this is just a placeholder
-  //       e_alu_result = e_rs1_data + e_imm_i;  // Calculate effective address
-  //     end
-
-  //     // PLACEHOLDER for Store instructions (Milestone 2)
-  //     OpcodeStore: begin
-  //       // For Milestone 1, this is just a placeholder
-  //       e_alu_result = e_rs1_data + e_imm_s;  // Calculate effective address
-  //     end
-
-  //     // PLACEHOLDER for AUIPC (Milestone 2)
-  //     OpcodeAuipc: begin
-  //       // For Milestone 1, this is just a placeholder
-  //       e_alu_result = e_pc + e_imm_u;
-  //     end
-
-  //     // PLACEHOLDER for JAL (Milestone 2)
-  //     OpcodeJal: begin
-  //       // For Milestone 1, this is just a placeholder
-  //       e_alu_result = e_pc + 4;  // Return address
-  //     end
-
-  //     // PLACEHOLDER for JALR (Milestone 2)
-  //     OpcodeJalr: begin
-  //       // For Milestone 1, this is just a placeholder
-  //       e_alu_result = e_pc + 4;  // Return address
-  //     end
-
-  //     // PLACEHOLDER for Miscellaneous Memory ops (Milestone 2)
-  //     OpcodeMiscMem: begin
-  //       // For Milestone 1, this is just a placeholder
-  //       e_alu_result = 0;
-  //     end
-
-  //     // PLACEHOLDER for Environment instructions (Milestone 2)
-  //     OpcodeEnviron: begin
-  //       // For Milestone 1, this is just a placeholder
-  //       e_alu_result = 0;
-  //     end
-
-  //     default: e_alu_result = 0;
-  //   endcase
-  // end
-
-  // ALU operation
   always_comb begin
     case (e_opcode)
       OpcodeLui: begin
@@ -825,7 +546,7 @@ module DatapathPipelined (
         // R-type ALU operations
         case (e_funct3)
           3'b000: begin
-            e_alu_result = e_cla_sum;  // ADD/SUB - use CLA
+            e_alu_result = e_cla_sum;  // ADD/SUB
           end
           3'b001:  e_alu_result = e_rs1_data << e_rs2_data[4:0];  // SLL
           3'b010:  e_alu_result = {31'b0, $signed(e_rs1_data) < $signed(e_rs2_data)};  // SLT
@@ -843,43 +564,36 @@ module DatapathPipelined (
 
       // PLACEHOLDER for Load instructions (Milestone 2)
       OpcodeLoad: begin
-        // For Milestone 1, use CLA for address calculation
         e_alu_result = e_cla_sum;  // Calculate effective address
       end
 
       // PLACEHOLDER for Store instructions (Milestone 2)
       OpcodeStore: begin
-        // For Milestone 1, use CLA for address calculation
         e_alu_result = e_cla_sum;  // Calculate effective address
       end
 
       // PLACEHOLDER for AUIPC (Milestone 2)
       OpcodeAuipc: begin
-        // For Milestone 1, this is just a placeholder
         e_alu_result = e_pc + e_imm_u;
       end
 
       // PLACEHOLDER for JAL (Milestone 2)
       OpcodeJal: begin
-        // For Milestone 1, this is just a placeholder
         e_alu_result = e_pc + 4;  // Return address
       end
 
       // PLACEHOLDER for JALR (Milestone 2)
       OpcodeJalr: begin
-        // For Milestone 1, this is just a placeholder
-        e_alu_result = e_pc + 4;  // Return address
+        e_alu_result = e_pc + 4;
       end
 
       // PLACEHOLDER for Miscellaneous Memory ops (Milestone 2)
       OpcodeMiscMem: begin
-        // For Milestone 1, this is just a placeholder
         e_alu_result = 0;
       end
 
       // PLACEHOLDER for Environment instructions (Milestone 2)
       OpcodeEnviron: begin
-        // For Milestone 1, this is just a placeholder
         e_alu_result = 0;
       end
 
@@ -916,30 +630,6 @@ module DatapathPipelined (
       .insn  (e_insn),
       .disasm(e_disasm)
   );
-
-  // // Pass execute results to memory stage
-  // stage_memory_t memory_state;
-  // always_ff @(posedge clk) begin
-  //   if (rst) begin
-  //     memory_state <= '{
-  //         pc: 0,
-  //         insn: 0,
-  //         alu_result: 0,
-  //         rd_addr: 0,
-  //         write_rd: 0,
-  //         cycle_status: CYCLE_RESET
-  //     };
-  //   end else begin
-  //     memory_state <= '{
-  //         pc: e_pc,
-  //         insn: e_insn,
-  //         alu_result: e_alu_result,
-  //         rd_addr: e_rd_addr,
-  //         write_rd: e_write_rd,
-  //         cycle_status: e_cycle_status
-  //     };
-  //   end
-  // end
 
   // Pass execute results to memory stage
   stage_memory_t memory_state;
@@ -989,8 +679,7 @@ module DatapathPipelined (
     m_bypass_data = m_alu_result;
   end
 
-  // No memory operations needed for Milestone 1
-  // Just pass ALU result through to Writeback stage
+  // Passing ALU result through to Writeback stage
 
   // Disassembly for debugging
   wire [255:0] m_disasm;
@@ -1065,12 +754,12 @@ module DatapathPipelined (
       .disasm(w_disasm)
   );
 
-  // Connect trace outputs for testbench
+  // Connect trace outputs
   assign trace_writeback_pc = w_pc;
   assign trace_writeback_insn = w_insn;
   assign trace_writeback_cycle_status = w_cycle_status;
 
-  // Detect halt condition when ECALL is encountered (for RISC-V tests)
+  // Detect halt condition when ECALL is encountered
   assign halt = (w_insn[6:0] == OpcodeEnviron) && (w_pc != 0);
 
 
