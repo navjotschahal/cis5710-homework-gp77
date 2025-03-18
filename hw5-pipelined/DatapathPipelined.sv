@@ -600,7 +600,48 @@ module DatapathPipelined (
   logic [6:0] e_funct7;
   logic [`OPCODE_SIZE] e_opcode;
   cycle_status_e e_cycle_status;
-  logic [`REG_SIZE] e_imm_i, e_imm_b, e_imm_u, e_imm_s;  // Added e_imm_s
+  logic [`REG_SIZE] e_imm_i, e_imm_b, e_imm_u, e_imm_s;
+
+  // CLA adder signals
+  logic [`REG_SIZE] e_cla_sum;
+  logic [`REG_SIZE] e_cla_b_input;
+
+
+  // CLA adder input logic - similar to the HW4 implementation
+  always_comb begin
+    case (e_opcode)
+      OpcodeRegImm: begin
+        // For I-type instructions like ADDI
+        e_cla_b_input = e_imm_i;
+      end
+      OpcodeRegReg: begin
+        if (e_funct3 == 3'b000 && e_funct7[5])
+          // For SUB instruction
+          e_cla_b_input = ~e_rs2_data + 1;
+        else
+          // For ADD instruction
+          e_cla_b_input = e_rs2_data;
+      end
+      OpcodeLoad: begin
+        // For load address calculation
+        e_cla_b_input = e_imm_i;
+      end
+      OpcodeStore: begin
+        // For store address calculation
+        e_cla_b_input = e_imm_s;
+      end
+      default: e_cla_b_input = 32'd0;
+    endcase
+  end
+
+  // Instantiate the CLA adder
+  cla cla_adder (
+      .a  (e_rs1_data),
+      .b  (e_cla_b_input),
+      .cin(1'b0),
+      .sum(e_cla_sum)
+  );
+
   // Connect execute stage signals
   always_comb begin
     e_rs1_addr = execute_state.rs1_addr;
@@ -663,6 +704,98 @@ module DatapathPipelined (
   end
 
   // ALU operation
+  // always_comb begin
+  //   case (e_opcode)
+  //     OpcodeLui: begin
+  //       // LUI just passes immediate to result
+  //       e_alu_result = e_imm_u;
+  //     end
+
+  //     OpcodeRegImm: begin
+  //       // I-type ALU operations
+  //       case (e_funct3)
+  //         3'b000:  e_alu_result = e_rs1_data + e_imm_i;  // ADDI
+  //         3'b010:  e_alu_result = {31'b0, $signed(e_rs1_data) < $signed(e_imm_i)};  // SLTI
+  //         3'b011:  e_alu_result = {31'b0, e_rs1_data < e_imm_i};  // SLTIU
+  //         3'b100:  e_alu_result = e_rs1_data ^ e_imm_i;  // XORI
+  //         3'b110:  e_alu_result = e_rs1_data | e_imm_i;  // ORI
+  //         3'b111:  e_alu_result = e_rs1_data & e_imm_i;  // ANDI
+  //         3'b001:  e_alu_result = e_rs1_data << e_imm_i[4:0];  // SLLI
+  //         3'b101: begin
+  //           if (e_funct7[5]) e_alu_result = $signed(e_rs1_data) >>> e_imm_i[4:0];  // SRAI
+  //           else e_alu_result = e_rs1_data >> e_imm_i[4:0];  // SRLI
+  //         end
+  //         default: e_alu_result = 0;
+  //       endcase
+  //     end
+
+  //     OpcodeRegReg: begin
+  //       // R-type ALU operations
+  //       case (e_funct3)
+  //         3'b000: begin
+  //           if (e_funct7[5]) e_alu_result = e_rs1_data - e_rs2_data;  // SUB
+  //           else e_alu_result = e_rs1_data + e_rs2_data;  // ADD
+  //         end
+  //         3'b001:  e_alu_result = e_rs1_data << e_rs2_data[4:0];  // SLL
+  //         3'b010:  e_alu_result = {31'b0, $signed(e_rs1_data) < $signed(e_rs2_data)};  // SLT
+  //         3'b011:  e_alu_result = {31'b0, e_rs1_data < e_rs2_data};  // SLTU
+  //         3'b100:  e_alu_result = e_rs1_data ^ e_rs2_data;  // XOR
+  //         3'b101: begin
+  //           if (e_funct7[5]) e_alu_result = $signed(e_rs1_data) >>> e_rs2_data[4:0];  // SRA
+  //           else e_alu_result = e_rs1_data >> e_rs2_data[4:0];  // SRL
+  //         end
+  //         3'b110:  e_alu_result = e_rs1_data | e_rs2_data;  // OR
+  //         3'b111:  e_alu_result = e_rs1_data & e_rs2_data;  // AND
+  //         default: e_alu_result = 0;
+  //       endcase
+  //     end
+  //     // PLACEHOLDER for Load instructions (Milestone 2)
+  //     OpcodeLoad: begin
+  //       // For Milestone 1, this is just a placeholder
+  //       e_alu_result = e_rs1_data + e_imm_i;  // Calculate effective address
+  //     end
+
+  //     // PLACEHOLDER for Store instructions (Milestone 2)
+  //     OpcodeStore: begin
+  //       // For Milestone 1, this is just a placeholder
+  //       e_alu_result = e_rs1_data + e_imm_s;  // Calculate effective address
+  //     end
+
+  //     // PLACEHOLDER for AUIPC (Milestone 2)
+  //     OpcodeAuipc: begin
+  //       // For Milestone 1, this is just a placeholder
+  //       e_alu_result = e_pc + e_imm_u;
+  //     end
+
+  //     // PLACEHOLDER for JAL (Milestone 2)
+  //     OpcodeJal: begin
+  //       // For Milestone 1, this is just a placeholder
+  //       e_alu_result = e_pc + 4;  // Return address
+  //     end
+
+  //     // PLACEHOLDER for JALR (Milestone 2)
+  //     OpcodeJalr: begin
+  //       // For Milestone 1, this is just a placeholder
+  //       e_alu_result = e_pc + 4;  // Return address
+  //     end
+
+  //     // PLACEHOLDER for Miscellaneous Memory ops (Milestone 2)
+  //     OpcodeMiscMem: begin
+  //       // For Milestone 1, this is just a placeholder
+  //       e_alu_result = 0;
+  //     end
+
+  //     // PLACEHOLDER for Environment instructions (Milestone 2)
+  //     OpcodeEnviron: begin
+  //       // For Milestone 1, this is just a placeholder
+  //       e_alu_result = 0;
+  //     end
+
+  //     default: e_alu_result = 0;
+  //   endcase
+  // end
+
+  // ALU operation
   always_comb begin
     case (e_opcode)
       OpcodeLui: begin
@@ -673,7 +806,7 @@ module DatapathPipelined (
       OpcodeRegImm: begin
         // I-type ALU operations
         case (e_funct3)
-          3'b000:  e_alu_result = e_rs1_data + e_imm_i;  // ADDI
+          3'b000:  e_alu_result = e_cla_sum;  // ADDI - use CLA
           3'b010:  e_alu_result = {31'b0, $signed(e_rs1_data) < $signed(e_imm_i)};  // SLTI
           3'b011:  e_alu_result = {31'b0, e_rs1_data < e_imm_i};  // SLTIU
           3'b100:  e_alu_result = e_rs1_data ^ e_imm_i;  // XORI
@@ -692,8 +825,7 @@ module DatapathPipelined (
         // R-type ALU operations
         case (e_funct3)
           3'b000: begin
-            if (e_funct7[5]) e_alu_result = e_rs1_data - e_rs2_data;  // SUB
-            else e_alu_result = e_rs1_data + e_rs2_data;  // ADD
+            e_alu_result = e_cla_sum;  // ADD/SUB - use CLA
           end
           3'b001:  e_alu_result = e_rs1_data << e_rs2_data[4:0];  // SLL
           3'b010:  e_alu_result = {31'b0, $signed(e_rs1_data) < $signed(e_rs2_data)};  // SLT
@@ -708,16 +840,17 @@ module DatapathPipelined (
           default: e_alu_result = 0;
         endcase
       end
+
       // PLACEHOLDER for Load instructions (Milestone 2)
       OpcodeLoad: begin
-        // For Milestone 1, this is just a placeholder
-        e_alu_result = e_rs1_data + e_imm_i;  // Calculate effective address
+        // For Milestone 1, use CLA for address calculation
+        e_alu_result = e_cla_sum;  // Calculate effective address
       end
 
       // PLACEHOLDER for Store instructions (Milestone 2)
       OpcodeStore: begin
-        // For Milestone 1, this is just a placeholder
-        e_alu_result = e_rs1_data + e_imm_s;  // Calculate effective address
+        // For Milestone 1, use CLA for address calculation
+        e_alu_result = e_cla_sum;  // Calculate effective address
       end
 
       // PLACEHOLDER for AUIPC (Milestone 2)
