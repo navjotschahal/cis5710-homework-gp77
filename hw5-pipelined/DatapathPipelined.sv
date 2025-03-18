@@ -781,6 +781,30 @@ module DatapathPipelined (
       .disasm(e_disasm)
   );
 
+  // // Pass execute results to memory stage
+  // stage_memory_t memory_state;
+  // always_ff @(posedge clk) begin
+  //   if (rst) begin
+  //     memory_state <= '{
+  //         pc: 0,
+  //         insn: 0,
+  //         alu_result: 0,
+  //         rd_addr: 0,
+  //         write_rd: 0,
+  //         cycle_status: CYCLE_RESET
+  //     };
+  //   end else begin
+  //     memory_state <= '{
+  //         pc: e_pc,
+  //         insn: e_insn,
+  //         alu_result: e_alu_result,
+  //         rd_addr: e_rd_addr,
+  //         write_rd: e_write_rd,
+  //         cycle_status: e_cycle_status
+  //     };
+  //   end
+  // end
+
   // Pass execute results to memory stage
   stage_memory_t memory_state;
   always_ff @(posedge clk) begin
@@ -800,7 +824,7 @@ module DatapathPipelined (
           alu_result: e_alu_result,
           rd_addr: e_rd_addr,
           write_rd: e_write_rd,
-          cycle_status: e_cycle_status
+          cycle_status: e_branch_taken ? CYCLE_TAKEN_BRANCH : e_cycle_status
       };
     end
   end
@@ -860,7 +884,13 @@ module DatapathPipelined (
           result: m_alu_result,
           rd_addr: m_rd_addr,
           write_rd: m_write_rd,
-          cycle_status: m_cycle_status
+          cycle_status:
+          (
+          m_cycle_status == CYCLE_TAKEN_BRANCH && m_insn != 0
+          ) ?
+          CYCLE_NO_STALL
+          :
+          m_cycle_status
       };
     end
   end
