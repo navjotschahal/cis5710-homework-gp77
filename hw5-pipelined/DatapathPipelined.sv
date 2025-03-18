@@ -511,7 +511,7 @@ module DatapathPipelined (
   always_comb begin
     case (e_opcode)
       OpcodeRegImm: e_alu_op2 = e_imm_i;  // I-type
-      OpcodeLui:    e_alu_op2 = e_imm_u;  // U-type (LUI)
+      OpcodeLui:    e_alu_op2 = e_imm_u;  // U-type
       default:      e_alu_op2 = e_rs2_data;  // R-type
     endcase
   end
@@ -527,7 +527,7 @@ module DatapathPipelined (
       OpcodeRegImm: begin
         // I-type ALU operations
         case (e_funct3)
-          3'b000:  e_alu_result = e_cla_sum;  // ADDI - use CLA
+          3'b000:  e_alu_result = e_cla_sum;  // ADDI
           3'b010:  e_alu_result = {31'b0, $signed(e_rs1_data) < $signed(e_imm_i)};  // SLTI
           3'b011:  e_alu_result = {31'b0, e_rs1_data < e_imm_i};  // SLTIU
           3'b100:  e_alu_result = e_rs1_data ^ e_imm_i;  // XORI
@@ -761,7 +761,6 @@ module DatapathPipelined (
 
   // Detect halt condition when ECALL is encountered
   assign halt = (w_insn[6:0] == OpcodeEnviron) && (w_pc != 0);
-
 
 endmodule
 
