@@ -105,6 +105,9 @@ module RegFile (
 
 endmodule
 
+
+/////////////////////// 
+
 /** state at the start of Decode stage */
 typedef struct packed {
   logic [`REG_SIZE] pc;
