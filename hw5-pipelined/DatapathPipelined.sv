@@ -164,6 +164,7 @@ module DatapathPipelined (
     logic [`REG_SIZE] pc;
     logic [`INSN_SIZE] insn;
     logic [`REG_SIZE] alu_result;
+      logic [`REG_SIZE] rs2_data;  // Add this field for store instructions
     logic [4:0] rd_addr;
     logic write_rd;
     cycle_status_e cycle_status;
@@ -201,7 +202,10 @@ module DatapathPipelined (
 
   // Calculate next PC value
   always_comb begin
-    if (e_branch_taken)
+    if (load_use_hazard)
+      // Stall: keep PC the same during load-use hazard
+      f_pc_next = f_pc_current;
+    else if (e_branch_taken)
       // When branch taken, use branch target from Execute stage
       f_pc_next = e_branch_target;
     else
@@ -281,6 +285,9 @@ module DatapathPipelined (
     end else if (e_branch_taken) begin
       // Insert bubble if branch taken (pipeline flush)
       decode_state <= '{pc: 0, insn: 0, cycle_status: CYCLE_TAKEN_BRANCH};
+    end else if (load_use_hazard) begin
+      // Keep current decode state during stall (do not update)
+      decode_state <= decode_state;
     end else begin
       decode_state <= '{pc: f_pc_current, insn: f_insn, cycle_status: f_cycle_status};
     end
@@ -343,7 +350,7 @@ module DatapathPipelined (
   logic d_write_rd;
   always_comb begin
     case (d_opcode)
-      OpcodeRegImm, OpcodeRegReg, OpcodeLui, OpcodeJal, OpcodeJalr: d_write_rd = 1'b1;
+      OpcodeLoad, OpcodeRegImm, OpcodeRegReg, OpcodeLui, OpcodeJal, OpcodeJalr: d_write_rd = 1'b1;
       default: d_write_rd = 1'b0;
     endcase
   end
@@ -382,6 +389,19 @@ module DatapathPipelined (
           rd_addr: 0,
           write_rd: 0,
           cycle_status: e_branch_taken ? CYCLE_TAKEN_BRANCH : CYCLE_RESET
+      };
+    end else if (load_use_hazard) begin
+      // Insert bubble when load-use hazard detected
+      execute_state <= '{
+          pc: 0,
+          insn: 0,
+          rs1_data: 0,
+          rs2_data: 0,
+          rs1_addr: 0,
+          rs2_addr: 0,
+          rd_addr: 0,
+          write_rd: 0,
+          cycle_status: CYCLE_LOAD2USE
       };
     end else begin
       // Normal operation
@@ -622,6 +642,20 @@ module DatapathPipelined (
     end
   end
 
+  // Detect load-use hazard (load in Execute, dependent instruction in Decode)
+  logic load_use_hazard;
+  always_comb begin
+    // Detect if Execute stage contains a load instruction
+    logic execute_has_load = (e_opcode == OpcodeLoad);
+    
+    // Check if Decode reads a register that Execute's load will write
+    logic decode_uses_execute_rd = (execute_has_load && e_write_rd && e_rd_addr != 0) && 
+                                  ((d_rs1 == e_rd_addr) || (d_rs2 == e_rd_addr));
+    
+    // Load-use hazard detected
+    load_use_hazard = execute_has_load && decode_uses_execute_rd;
+  end
+
   // Disassembly for debugging
   wire [255:0] e_disasm;
   Disasm #(
@@ -639,6 +673,7 @@ module DatapathPipelined (
           pc: 0,
           insn: 0,
           alu_result: 0,
+          rs2_data: 0,  // Initialize rs2_data field
           rd_addr: 0,
           write_rd: 0,
           cycle_status: CYCLE_RESET
@@ -648,6 +683,7 @@ module DatapathPipelined (
           pc: e_pc,
           insn: e_insn,
           alu_result: e_alu_result,
+          rs2_data: e_rs2_data,  // Pass rs2_data from Execute to Memory
           rd_addr: e_rd_addr,
           write_rd: e_write_rd,
           cycle_status: e_branch_taken ? CYCLE_TAKEN_BRANCH : e_cycle_status
@@ -660,23 +696,36 @@ module DatapathPipelined (
   /****************/
 
   // Memory stage signals
-  logic [`REG_SIZE] m_pc, m_alu_result;
+  logic [`REG_SIZE] m_pc, m_alu_result, m_rs2_data;
   logic [`INSN_SIZE] m_insn;
   logic [4:0] m_rd_addr;
   logic m_write_rd;
   cycle_status_e m_cycle_status;
+  logic use_w_m_bypass;
+  logic [`OPCODE_SIZE] m_opcode;
+
 
   // Connect memory stage signals
   always_comb begin
     m_pc = memory_state.pc;
     m_insn = memory_state.insn;
     m_alu_result = memory_state.alu_result;
+    m_rs2_data = memory_state.rs2_data;  // Connect rs2_data
+
     m_rd_addr = memory_state.rd_addr;
     m_write_rd = memory_state.write_rd;
     m_cycle_status = memory_state.cycle_status;
+    m_opcode = m_insn[6:0];
 
     // Data for MX bypass
     m_bypass_data = m_alu_result;
+
+  // WM Bypass: Detect if we need to forward data from Writeback to Memory
+  // This matters for store instructions where rs2 contains the data to store
+  use_w_m_bypass = (m_opcode == OpcodeStore) && 
+                   (memory_state.insn[24:20] != 0) && // rs2 != x0
+                   (memory_state.insn[24:20] == w_rd_addr) && 
+                   w_write_rd;
   end
 
   // Passing ALU result through to Writeback stage
@@ -703,20 +752,22 @@ module DatapathPipelined (
           cycle_status: CYCLE_RESET
       };
     end else begin
-      writeback_state <= '{
-          pc: m_pc,
-          insn: m_insn,
-          result: m_alu_result,
-          rd_addr: m_rd_addr,
-          write_rd: m_write_rd,
-          cycle_status:
-          (
-          m_cycle_status == CYCLE_TAKEN_BRANCH && m_insn != 0
-          ) ?
-          CYCLE_NO_STALL
-          :
-          m_cycle_status
-      };
+      // Determine result based on instruction type
+    logic [`REG_SIZE] result_value;
+    if (m_opcode == OpcodeLoad) 
+      result_value = load_data_from_dmem;  // Load result from memory
+    else
+      result_value = m_alu_result;  // ALU result for other instructions
+      
+    writeback_state <= '{
+        pc: m_pc,
+        insn: m_insn,
+        result: result_value,
+        rd_addr: m_rd_addr,
+        write_rd: m_write_rd,
+        cycle_status: (m_cycle_status == CYCLE_TAKEN_BRANCH && m_insn != 0) ? 
+                      CYCLE_NO_STALL : m_cycle_status
+    };
     end
   end
 
@@ -761,6 +812,54 @@ module DatapathPipelined (
 
   // Detect halt condition when ECALL is encountered
   assign halt = (w_insn[6:0] == OpcodeEnviron) && (w_pc != 0);
+
+  // Memory stage connections to data memory /////////
+  always_comb begin
+    // Default values
+    addr_to_dmem = 0;
+    store_data_to_dmem = 0;
+    store_we_to_dmem = 4'b0000;
+    
+    if (m_opcode == OpcodeLoad) begin
+      // Load instruction: send address to data memory
+      addr_to_dmem = m_alu_result;
+    end else if (m_opcode == OpcodeStore) begin
+      // Store instruction
+      addr_to_dmem = m_alu_result;
+      
+      // Store data with WM bypassing
+      if (use_w_m_bypass) 
+        store_data_to_dmem = w_result;  // Use data from Writeback
+      else
+        store_data_to_dmem = m_rs2_data;  // Use data from Memory stage
+      
+      // Generate appropriate byte enable signals based on funct3
+      case (m_insn[14:12])
+        3'b000: begin // SB
+          case (m_alu_result[1:0])
+            2'b00: store_we_to_dmem = 4'b0001;
+            2'b01: store_we_to_dmem = 4'b0010;
+            2'b10: store_we_to_dmem = 4'b0100;
+            2'b11: store_we_to_dmem = 4'b1000;
+          endcase
+        end
+        
+        3'b001: begin // SH
+          case (m_alu_result[1])
+            1'b0: store_we_to_dmem = 4'b0011;
+            1'b1: store_we_to_dmem = 4'b1100;
+          endcase
+        end
+        
+        3'b010: begin // SW
+          store_we_to_dmem = 4'b1111;
+        end
+        
+        default: store_we_to_dmem = 4'b0000;
+      endcase
+    end
+  end
+  //////////////////////////////////////////////
 
 endmodule
 
