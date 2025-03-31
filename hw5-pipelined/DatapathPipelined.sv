@@ -815,43 +815,67 @@ module DatapathPipelined (
 
   // Memory stage connections to data memory /////////
   always_comb begin
+          logic [`REG_SIZE] store_data;
+
     // Default values
     addr_to_dmem = 0;
     store_data_to_dmem = 0;
     store_we_to_dmem = 4'b0000;
     
     if (m_opcode == OpcodeLoad) begin
-      // Load instruction: send address to data memory
-      addr_to_dmem = m_alu_result;
+      // Load instruction: align address to 4-byte boundary
+      addr_to_dmem = {m_alu_result[31:2], 2'b00};
     end else if (m_opcode == OpcodeStore) begin
-      // Store instruction
-      addr_to_dmem = m_alu_result;
+      // Store instruction: align address to 4-byte boundary 
+      addr_to_dmem = {m_alu_result[31:2], 2'b00};
       
-      // Store data with WM bypassing
+      // Determine store data with proper bypassing
       if (use_w_m_bypass) 
-        store_data_to_dmem = w_result;  // Use data from Writeback
+        store_data = w_result;
       else
-        store_data_to_dmem = m_rs2_data;  // Use data from Memory stage
+        store_data = m_rs2_data;
       
       // Generate appropriate byte enable signals based on funct3
       case (m_insn[14:12])
-        3'b000: begin // SB
+        3'b000: begin // SB - store byte
+          // Position the byte data based on the unaligned address
           case (m_alu_result[1:0])
-            2'b00: store_we_to_dmem = 4'b0001;
-            2'b01: store_we_to_dmem = 4'b0010;
-            2'b10: store_we_to_dmem = 4'b0100;
-            2'b11: store_we_to_dmem = 4'b1000;
+            2'b00: begin 
+              store_data_to_dmem = {24'b0, store_data[7:0]};
+              store_we_to_dmem = 4'b0001;
+            end
+            2'b01: begin 
+              store_data_to_dmem = {16'b0, store_data[7:0], 8'b0};
+              store_we_to_dmem = 4'b0010;
+            end
+            2'b10: begin 
+              store_data_to_dmem = {8'b0, store_data[7:0], 16'b0};
+              store_we_to_dmem = 4'b0100;
+            end
+            2'b11: begin 
+              store_data_to_dmem = {store_data[7:0], 24'b0};
+              store_we_to_dmem = 4'b1000;
+            end
           endcase
         end
         
-        3'b001: begin // SH
+        3'b001: begin // SH - store halfword
           case (m_alu_result[1])
-            1'b0: store_we_to_dmem = 4'b0011;
-            1'b1: store_we_to_dmem = 4'b1100;
+            1'b0: begin
+              // Lower halfword
+              store_data_to_dmem = {16'b0, store_data[15:0]};
+              store_we_to_dmem = 4'b0011;
+            end
+            1'b1: begin
+              // Upper halfword
+              store_data_to_dmem = {store_data[15:0], 16'b0};
+              store_we_to_dmem = 4'b1100;
+            end
           endcase
         end
         
-        3'b010: begin // SW
+        3'b010: begin // SW - store word
+          store_data_to_dmem = store_data;
           store_we_to_dmem = 4'b1111;
         end
         
