@@ -525,11 +525,14 @@ div_tracker_t div_tracker[8];
   );
 
   // Division operation detector and tracker
-always_ff @(posedge clk) begin
+always_ff @(posedge clk ) begin
     if (rst) begin
         for (int i = 0; i < 8; i++) begin
             div_tracker[i] <= '{valid: 0, rd_addr: 0, write_rd: 0, pc: 0, insn: 0, div_op: 0, rs1_sign: 0, rs2_sign: 0};
         end
+        div_i_dividend <= 0;
+        div_i_divisor <= 0;
+
     end else begin
         // Shift the tracker entries
         for (int i = 7; i > 0; i--) begin
@@ -586,7 +589,7 @@ always_ff @(posedge clk) begin
     end
 end
 
-  // Detect data hazards for division operations
+  // Enhance division hazard detection
 always_comb begin
     div_data_hazard = 0;
     for (int i = 0; i < 8; i++) begin
@@ -595,28 +598,44 @@ always_comb begin
             div_data_hazard = 1;
         end
     end
+    // Add explicit check for division instruction depending on in-flight division
+    // if (e_opcode == OpcodeRegReg && e_funct7 == 7'b0000001 && 
+    //     (d_opcode == OpcodeRegReg && d_funct7 == 7'b0000001)) begin
+    //     div_data_hazard = 1;
+    // end
 end
 
 // Add division bypass logic
 logic use_div_x1_bypass, use_div_x2_bypass;
 logic [`REG_SIZE] div_bypass_data;
 
+// Fix bypass logic to check all tracker stages
 always_comb begin
-    // Check latest division result for bypass (from div_tracker[7])
-    use_div_x1_bypass = div_tracker[7].valid && (e_rs1_addr != 0) && (e_rs1_addr == div_tracker[7].rd_addr) && div_tracker[7].write_rd;
-    use_div_x2_bypass = div_tracker[7].valid && (e_rs2_addr != 0) && (e_rs2_addr == div_tracker[7].rd_addr) && div_tracker[7].write_rd;
+    use_div_x1_bypass = 0;
+    use_div_x2_bypass = 0;
+    div_bypass_data = 0;
     
-    // Compute division result for bypass
-    if (div_tracker[7].valid) begin
-        case (div_tracker[7].div_op)
-            4'b0001: div_bypass_data = (div_tracker[7].rs1_sign != div_tracker[7].rs2_sign) ? ~div_o_quotient + 1 : div_o_quotient;
-            4'b0010: div_bypass_data = div_o_quotient;
-            4'b0100: div_bypass_data = div_tracker[7].rs1_sign ? ~div_o_remainder + 1 : div_o_remainder;
-            4'b1000: div_bypass_data = div_o_remainder;
-            default: div_bypass_data = div_o_quotient;
-        endcase
-    end else begin
-        div_bypass_data = 0;
+    for (int i = 0; i < 8; i++) begin
+        if (div_tracker[i].valid && div_tracker[i].write_rd) begin
+            if (e_rs1_addr != 0 && e_rs1_addr == div_tracker[i].rd_addr) begin
+                use_div_x1_bypass = 1;
+            end
+            if (e_rs2_addr != 0 && e_rs2_addr == div_tracker[i].rd_addr) begin
+                use_div_x2_bypass = 1;
+            end
+            if (use_div_x1_bypass || use_div_x2_bypass) begin
+                case (div_tracker[i].div_op)
+                    4'b0001: div_bypass_data = (div_tracker[i].rs1_sign != div_tracker[i].rs2_sign) ? 
+                                             ~div_o_quotient + 1 : div_o_quotient;
+                    4'b0010: div_bypass_data = div_o_quotient;
+                    4'b0100: div_bypass_data = div_tracker[i].rs1_sign ? 
+                                             ~div_o_remainder + 1 : div_o_remainder;
+                    4'b1000: div_bypass_data = div_o_remainder;
+                    default: div_bypass_data = 0;
+                endcase
+                break; // Use most recent result
+            end
+        end
     end
 end
 
@@ -659,6 +678,7 @@ end
   end
 
   // Apply bypass logic to get actual operand values
+  // Update operand selection with proper priority
   always_comb begin
       // First operand (rs1)
       if (use_div_x1_bypass) e_rs1_data = div_bypass_data;
