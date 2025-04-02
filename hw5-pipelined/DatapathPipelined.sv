@@ -202,7 +202,7 @@ module DatapathPipelined (
 
   // Calculate next PC value
   always_comb begin
-    if (load_use_hazard)
+    if (load_use_hazard || div_data_hazard  )
       // Stall: keep PC the same during load-use hazard
       f_pc_next = f_pc_current;
     else if (e_branch_taken)
@@ -285,7 +285,7 @@ module DatapathPipelined (
     end else if (e_branch_taken) begin
       // Insert bubble if branch taken (pipeline flush)
       decode_state <= '{pc: 0, insn: 0, cycle_status: CYCLE_TAKEN_BRANCH};
-    end else if (load_use_hazard) begin
+    end else if (load_use_hazard || div_data_hazard  ) begin
       // Keep current decode state during stall (do not update)
       decode_state <= decode_state;
     end else begin
@@ -403,6 +403,20 @@ module DatapathPipelined (
           write_rd: 0,
           cycle_status: CYCLE_LOAD2USE
       };
+
+      end else if (div_data_hazard ) begin
+      // Insert bubble for division hazards or when starting a division
+      execute_state <= '{
+          pc: 0,
+          insn: 0,
+          rs1_data: 0,
+          rs2_data: 0,
+          rs1_addr: 0,
+          rs2_addr: 0,
+          rd_addr: 0,
+          write_rd: 0,
+          cycle_status: CYCLE_DIV
+      };
     end else begin
       // Normal operation
       execute_state <= '{
@@ -475,6 +489,137 @@ module DatapathPipelined (
       .sum(e_cla_sum)
   );
 
+logic div_data_hazard;
+// Divider inputs and outputs
+logic [`REG_SIZE] div_i_dividend;  // Dividend for the divider
+logic [`REG_SIZE] div_i_divisor;   // Divisor for the divider
+logic [`REG_SIZE] div_o_quotient;  // Quotient output from the divider
+logic [`REG_SIZE] div_o_remainder; // Remainder output from the divider
+
+// Structure to track in-flight division operations
+typedef struct packed {
+    logic valid;              // Is this entry valid?
+    logic [4:0] rd_addr;      // Destination register
+    logic write_rd;           // Write to register file?
+    logic [`REG_SIZE] pc;     // PC of the instruction
+    logic [`INSN_SIZE] insn;  // Instruction bits
+    logic [3:0] div_op;       // Operation type (DIV, DIVU, REM, REMU)
+    logic rs1_sign;           // Sign of rs1 (for signed ops)
+    logic rs2_sign;           // Sign of rs2 (for signed ops)
+} div_tracker_t;
+
+// Shift register for tracking up to 8 in-flight divisions
+div_tracker_t div_tracker[8];
+
+
+
+  // Instantiate the pipelined divider
+  DividerUnsignedPipelined divider (
+      .clk(clk),
+      .rst(rst),
+      .stall(1'b0),  // We don't stall the divider internally
+      .i_dividend(div_i_dividend),
+      .i_divisor(div_i_divisor),
+      .o_quotient(div_o_quotient),
+      .o_remainder(div_o_remainder)
+  );
+
+  // Division operation detector and tracker
+always_ff @(posedge clk) begin
+    if (rst) begin
+        for (int i = 0; i < 8; i++) begin
+            div_tracker[i] <= '{valid: 0, rd_addr: 0, write_rd: 0, pc: 0, insn: 0, div_op: 0, rs1_sign: 0, rs2_sign: 0};
+        end
+    end else begin
+        // Shift the tracker entries
+        for (int i = 7; i > 0; i--) begin
+            div_tracker[i] <= div_tracker[i-1];
+        end
+        
+        // Check for new division operation
+        if (e_opcode == OpcodeRegReg && e_funct7 == 7'b0000001 && e_insn != 0) begin
+            div_tracker[0].valid <= 1;
+            div_tracker[0].rd_addr <= e_rd_addr;
+            div_tracker[0].write_rd <= e_write_rd;
+            div_tracker[0].pc <= e_pc;
+            div_tracker[0].insn <= e_insn;
+            
+            // Set operation type
+            case (e_funct3)
+                3'b100: div_tracker[0].div_op <= 4'b0001;  // DIV
+                3'b101: div_tracker[0].div_op <= 4'b0010;  // DIVU
+                3'b110: div_tracker[0].div_op <= 4'b0100;  // REM
+                3'b111: div_tracker[0].div_op <= 4'b1000;  // REMU
+                default: div_tracker[0].div_op <= 4'b0000;
+            endcase
+            
+            // Store signs for signed operations
+            if (e_funct3 == 3'b100 || e_funct3 == 3'b110) begin
+                div_tracker[0].rs1_sign <= e_rs1_data[31];
+                div_tracker[0].rs2_sign <= e_rs2_data[31];
+            end else begin
+                div_tracker[0].rs1_sign <= 0;
+                div_tracker[0].rs2_sign <= 0;
+            end
+            
+            // Feed the divider with sign-corrected inputs
+            case (e_funct3)
+                3'b100, 3'b110: begin  // DIV, REM (signed)
+                    div_i_dividend <= e_rs1_data[31] ? (~e_rs1_data + 1) : e_rs1_data;
+                    div_i_divisor <= e_rs2_data[31] ? (~e_rs2_data + 1) : e_rs2_data;
+                end
+                default: begin  // DIVU, REMU (unsigned)
+                    div_i_dividend <= e_rs1_data;
+                    div_i_divisor <= e_rs2_data;
+                end
+            endcase
+        end else begin
+            div_tracker[0].valid <= 0;
+            div_tracker[0].rd_addr <= 0;
+            div_tracker[0].write_rd <= 0;
+            div_tracker[0].pc <= 0;
+            div_tracker[0].insn <= 0;
+            div_tracker[0].div_op <= 0;
+            div_tracker[0].rs1_sign <= 0;
+            div_tracker[0].rs2_sign <= 0;
+        end
+    end
+end
+
+  // Detect data hazards for division operations
+always_comb begin
+    div_data_hazard = 0;
+    for (int i = 0; i < 8; i++) begin
+        if (div_tracker[i].valid && div_tracker[i].rd_addr != 0 && e_insn != 0 &&
+            ((e_rs1_addr == div_tracker[i].rd_addr) || (e_rs2_addr == div_tracker[i].rd_addr))) begin
+            div_data_hazard = 1;
+        end
+    end
+end
+
+// Add division bypass logic
+logic use_div_x1_bypass, use_div_x2_bypass;
+logic [`REG_SIZE] div_bypass_data;
+
+always_comb begin
+    // Check latest division result for bypass (from div_tracker[7])
+    use_div_x1_bypass = div_tracker[7].valid && (e_rs1_addr != 0) && (e_rs1_addr == div_tracker[7].rd_addr) && div_tracker[7].write_rd;
+    use_div_x2_bypass = div_tracker[7].valid && (e_rs2_addr != 0) && (e_rs2_addr == div_tracker[7].rd_addr) && div_tracker[7].write_rd;
+    
+    // Compute division result for bypass
+    if (div_tracker[7].valid) begin
+        case (div_tracker[7].div_op)
+            4'b0001: div_bypass_data = (div_tracker[7].rs1_sign != div_tracker[7].rs2_sign) ? ~div_o_quotient + 1 : div_o_quotient;
+            4'b0010: div_bypass_data = div_o_quotient;
+            4'b0100: div_bypass_data = div_tracker[7].rs1_sign ? ~div_o_remainder + 1 : div_o_remainder;
+            4'b1000: div_bypass_data = div_o_remainder;
+            default: div_bypass_data = div_o_quotient;
+        endcase
+    end else begin
+        div_bypass_data = 0;
+    end
+end
+
   // Connect execute stage signals
   always_comb begin
     e_rs1_addr = execute_state.rs1_addr;
@@ -515,15 +660,17 @@ module DatapathPipelined (
 
   // Apply bypass logic to get actual operand values
   always_comb begin
-    // First operand (rs1)
-    if (use_m_x1_bypass) e_rs1_data = m_bypass_data;
-    else if (use_w_x1_bypass) e_rs1_data = w_bypass_data;
-    else e_rs1_data = execute_state.rs1_data;
+      // First operand (rs1)
+      if (use_div_x1_bypass) e_rs1_data = div_bypass_data;
+      else if (use_m_x1_bypass) e_rs1_data = m_bypass_data;
+      else if (use_w_x1_bypass) e_rs1_data = w_bypass_data;
+      else e_rs1_data = execute_state.rs1_data;
 
-    // Second operand (rs2)
-    if (use_m_x2_bypass) e_rs2_data = m_bypass_data;
-    else if (use_w_x2_bypass) e_rs2_data = w_bypass_data;
-    else e_rs2_data = execute_state.rs2_data;
+      // Second operand (rs2)
+      if (use_div_x2_bypass) e_rs2_data = div_bypass_data;
+      else if (use_m_x2_bypass) e_rs2_data = m_bypass_data;
+      else if (use_w_x2_bypass) e_rs2_data = w_bypass_data;
+      else e_rs2_data = execute_state.rs2_data;
   end
 
   // ALU second operand selection
@@ -667,29 +814,44 @@ module DatapathPipelined (
 
   // Pass execute results to memory stage
   stage_memory_t memory_state;
-  always_ff @(posedge clk) begin
+  // Pass execute results to memory stage
+always_ff @(posedge clk) begin
     if (rst) begin
-      memory_state <= '{
-          pc: 0,
-          insn: 0,
-          alu_result: 0,
-          rs2_data: 0,  // Initialize rs2_data field
-          rd_addr: 0,
-          write_rd: 0,
-          cycle_status: CYCLE_RESET
-      };
+        memory_state <= '{pc: 0, insn: 0, alu_result: 0, rs2_data: 0, rd_addr: 0, write_rd: 0, cycle_status: CYCLE_RESET};
     end else begin
-      memory_state <= '{
-          pc: e_pc,
-          insn: e_insn,
-          alu_result: e_alu_result,
-          rs2_data: e_rs2_data,  // Pass rs2_data from Execute to Memory
-          rd_addr: e_rd_addr,
-          write_rd: e_write_rd,
-          cycle_status: e_branch_taken ? CYCLE_TAKEN_BRANCH : e_cycle_status
-      };
+        // if (div_tracker[7].valid) begin
+        //     // Division complete, process result
+        //     logic [`REG_SIZE] div_result;
+        //     case (div_tracker[7].div_op)
+        //         4'b0001: div_result = (div_tracker[7].rs1_sign != div_tracker[7].rs2_sign) ? ~div_o_quotient + 1 : div_o_quotient;  // DIV
+        //         4'b0010: div_result = div_o_quotient;  // DIVU
+        //         4'b0100: div_result = div_tracker[7].rs1_sign ? ~div_o_remainder + 1 : div_o_remainder;  // REM
+        //         4'b1000: div_result = div_o_remainder;  // REMU
+        //         default: div_result = div_o_quotient;
+        //     endcase
+            
+        //     memory_state <= '{
+        //         pc: div_tracker[7].pc,
+        //         insn: div_tracker[7].insn,
+        //         alu_result: div_result,
+        //         rs2_data: 0,
+        //         rd_addr: div_tracker[7].rd_addr,
+        //         write_rd: div_tracker[7].write_rd,
+        //         cycle_status: CYCLE_NO_STALL
+        //     };
+        // end else begin
+            memory_state <= '{
+                pc: e_pc,
+                insn: e_insn,
+                alu_result: e_alu_result,
+                rs2_data: e_rs2_data,
+                rd_addr: e_rd_addr,
+                write_rd: e_write_rd,
+                cycle_status: e_branch_taken ? CYCLE_TAKEN_BRANCH : e_cycle_status
+            };
+        // end
     end
-  end
+end
 
   /****************/
   /* MEMORY STAGE */
@@ -753,21 +915,42 @@ module DatapathPipelined (
       };
     end else begin
       // Determine result based on instruction type
-    logic [`REG_SIZE] result_value;
-    if (m_opcode == OpcodeLoad) 
-      result_value = load_data_from_dmem;  // Load result from memory
-    else
-      result_value = m_alu_result;  // ALU result for other instructions
-      
-    writeback_state <= '{
-        pc: m_pc,
-        insn: m_insn,
-        result: result_value,
-        rd_addr: m_rd_addr,
-        write_rd: m_write_rd,
-        cycle_status: (m_cycle_status == CYCLE_TAKEN_BRANCH && m_insn != 0) ? 
-                      CYCLE_NO_STALL : m_cycle_status
-    };
+        logic [`REG_SIZE] result_value;
+        if (div_tracker[7].valid) begin
+            // Division result is ready
+            case (div_tracker[7].div_op)
+                4'b0001: result_value = (div_tracker[7].rs1_sign != div_tracker[7].rs2_sign) ? ~div_o_quotient + 1 : div_o_quotient;  // DIV
+                4'b0010: result_value = div_o_quotient;  // DIVU
+                4'b0100: result_value = div_tracker[7].rs1_sign ? ~div_o_remainder + 1 : div_o_remainder;  // REM
+                4'b1000: result_value = div_o_remainder;  // REMU
+                default: result_value = div_o_quotient;
+            endcase
+
+            writeback_state <= '{
+                pc: div_tracker[7].pc,
+                insn: div_tracker[7].insn,
+                result: result_value,
+                rd_addr: div_tracker[7].rd_addr,
+                write_rd: div_tracker[7].write_rd,
+                cycle_status: CYCLE_NO_STALL
+            };
+        end else begin
+            // Normal operation
+            if (m_opcode == OpcodeLoad)
+                result_value = load_data_from_dmem;  // Load result from memory
+            else
+                result_value = m_alu_result;  // ALU result for other instructions
+
+            writeback_state <= '{
+                pc: m_pc,
+                insn: m_insn,
+                result: result_value,
+                rd_addr: m_rd_addr,
+                write_rd: m_write_rd,
+                cycle_status: (m_cycle_status == CYCLE_TAKEN_BRANCH && m_insn != 0) ? 
+                              CYCLE_NO_STALL : m_cycle_status
+            };
+        end
     end
   end
 
