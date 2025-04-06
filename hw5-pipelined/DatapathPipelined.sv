@@ -744,6 +744,9 @@ end
 
   // ALU operation
   always_comb begin
+    e_branch_taken = 0;
+    e_branch_target = e_pc + 4;  // Default next PC
+
     case (e_opcode)
       OpcodeLui: begin
         // LUI just passes immediate to result
@@ -805,8 +808,10 @@ end
 
       // PLACEHOLDER for JAL (Milestone 2)
       OpcodeJal: begin
-        e_alu_result = e_pc + 4;  // Return address
-      end
+      e_alu_result = e_pc + 4;  // Return address
+      e_branch_taken = 1;
+      e_branch_target = e_pc + e_imm_j;
+    end
 
       // PLACEHOLDER for JALR (Milestone 2)
       OpcodeJalr: begin
@@ -827,12 +832,12 @@ end
 
       default: e_alu_result = 0;
     endcase
-  end
+  // end
 
   // Branch handling
-  always_comb begin
-    e_branch_taken  = 0;
-    e_branch_target = e_pc + 4;  // Default next PC
+  // always_comb begin
+  //   e_branch_taken  = 0;
+  //   e_branch_target = e_pc + 4;  // Default next PC
 
     if (e_opcode == OpcodeBranch) begin
       // Branch instruction
@@ -1065,11 +1070,45 @@ end
             };
         end else begin
             // Normal operation
-            if (m_opcode == OpcodeLoad)
-                result_value = load_data_from_dmem;  // Load result from memory
-            else
-                result_value = m_alu_result;  // ALU result for other instructions
-
+            // In the writeback stage, where load data is processed:
+if (m_opcode == OpcodeLoad) begin
+    case (m_insn[14:12])  // funct3 field
+        3'b001: begin  // LH (load halfword)
+            case (m_alu_result[1])  // Check the halfword offset
+                1'b0: result_value = {{16{load_data_from_dmem[15]}}, load_data_from_dmem[15:0]};  // Lower halfword
+                1'b1: result_value = {{16{load_data_from_dmem[31]}}, load_data_from_dmem[31:16]}; // Upper halfword
+            endcase
+        end
+        3'b000: begin  // LB (load byte)
+            case (m_alu_result[1:0])  // Check the byte offset
+                2'b00: result_value = {{24{load_data_from_dmem[7]}}, load_data_from_dmem[7:0]};    // Byte 0
+                2'b01: result_value = {{24{load_data_from_dmem[15]}}, load_data_from_dmem[15:8]};  // Byte 1
+                2'b10: result_value = {{24{load_data_from_dmem[23]}}, load_data_from_dmem[23:16]}; // Byte 2
+                2'b11: result_value = {{24{load_data_from_dmem[31]}}, load_data_from_dmem[31:24]}; // Byte 3
+            endcase
+        end
+        3'b010: begin  // LW (load word)
+            result_value = load_data_from_dmem;  // No extraction needed for word loads
+        end
+        3'b100: begin  // LBU (load byte unsigned)
+            case (m_alu_result[1:0])
+                2'b00: result_value = {24'b0, load_data_from_dmem[7:0]};    // Byte 0
+                2'b01: result_value = {24'b0, load_data_from_dmem[15:8]};   // Byte 1
+                2'b10: result_value = {24'b0, load_data_from_dmem[23:16]};  // Byte 2
+                2'b11: result_value = {24'b0, load_data_from_dmem[31:24]};  // Byte 3
+            endcase
+        end
+        3'b101: begin  // LHU (load halfword unsigned)
+            case (m_alu_result[1])
+                1'b0: result_value = {16'b0, load_data_from_dmem[15:0]};   // Lower halfword
+                1'b1: result_value = {16'b0, load_data_from_dmem[31:16]};  // Upper halfword
+            endcase
+        end
+        default: result_value = load_data_from_dmem;
+    endcase
+end else begin
+    result_value = m_alu_result;  // ALU result for non-load instructions
+end
             writeback_state <= '{
                 pc: m_pc,
                 insn: m_insn,
