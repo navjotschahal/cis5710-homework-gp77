@@ -164,6 +164,7 @@ module DatapathPipelined (
     logic [`REG_SIZE] pc;
     logic [`INSN_SIZE] insn;
     logic [`REG_SIZE] alu_result;
+    logic [`REG_SIZE] rs2_data;  // Add this field for store instructions
     logic [4:0] rd_addr;
     logic write_rd;
     cycle_status_e cycle_status;
@@ -201,7 +202,10 @@ module DatapathPipelined (
 
   // Calculate next PC value
   always_comb begin
-    if (e_branch_taken)
+    if (load_use_hazard || div_data_hazard)
+      // Stall: keep PC the same during load-use hazard
+      f_pc_next = f_pc_current;
+    else if (e_branch_taken)
       // When branch taken, use branch target from Execute stage
       f_pc_next = e_branch_target;
     else
@@ -281,6 +285,9 @@ module DatapathPipelined (
     end else if (e_branch_taken) begin
       // Insert bubble if branch taken (pipeline flush)
       decode_state <= '{pc: 0, insn: 0, cycle_status: CYCLE_TAKEN_BRANCH};
+    end else if (load_use_hazard || div_data_hazard) begin
+      // Keep current decode state during stall (do not update)
+      decode_state <= decode_state;
     end else begin
       decode_state <= '{pc: f_pc_current, insn: f_insn, cycle_status: f_cycle_status};
     end
@@ -307,6 +314,7 @@ module DatapathPipelined (
   logic [`REG_SIZE] d_imm_b;
   logic [`REG_SIZE] d_imm_u;
   logic [`REG_SIZE] d_imm_j;
+  logic d_is_div;
 
   always_comb begin
     // Parse instruction fields
@@ -316,6 +324,11 @@ module DatapathPipelined (
     d_rs1 = decode_state.insn[19:15];
     d_rs2 = decode_state.insn[24:20];
     d_funct7 = decode_state.insn[31:25];
+
+    d_is_div = (d_opcode == OpcodeRegReg && d_funct7 == 7'b0000001 && 
+             (d_funct3 == 3'b100 || d_funct3 == 3'b101 || 
+              d_funct3 == 3'b110 || d_funct3 == 3'b111));
+
 
     // Generate immediates for different instruction formats
     d_imm_i = {{20{decode_state.insn[31]}}, decode_state.insn[31:20]};
@@ -343,7 +356,8 @@ module DatapathPipelined (
   logic d_write_rd;
   always_comb begin
     case (d_opcode)
-      OpcodeRegImm, OpcodeRegReg, OpcodeLui, OpcodeJal, OpcodeJalr: d_write_rd = 1'b1;
+      OpcodeLoad, OpcodeRegImm, OpcodeRegReg, OpcodeLui, OpcodeJal, OpcodeJalr, OpcodeAuipc:
+      d_write_rd = 1'b1;
       default: d_write_rd = 1'b0;
     endcase
   end
@@ -383,6 +397,33 @@ module DatapathPipelined (
           write_rd: 0,
           cycle_status: e_branch_taken ? CYCLE_TAKEN_BRANCH : CYCLE_RESET
       };
+    end else if (load_use_hazard) begin
+      // Insert bubble when load-use hazard detected
+      execute_state <= '{
+          pc: 0,
+          insn: 0,
+          rs1_data: 0,
+          rs2_data: 0,
+          rs1_addr: 0,
+          rs2_addr: 0,
+          rd_addr: 0,
+          write_rd: 0,
+          cycle_status: CYCLE_LOAD2USE
+      };
+
+    end else if (div_data_hazard) begin
+      // Insert bubble for division hazards or when starting a division
+      execute_state <= '{
+          pc: 0,
+          insn: 0,
+          rs1_data: 0,
+          rs2_data: 0,
+          rs1_addr: 0,
+          rs2_addr: 0,
+          rd_addr: 0,
+          write_rd: 0,
+          cycle_status: CYCLE_DIV
+      };
     end else begin
       // Normal operation
       execute_state <= '{
@@ -414,7 +455,7 @@ module DatapathPipelined (
   logic [6:0] e_funct7;
   logic [`OPCODE_SIZE] e_opcode;
   cycle_status_e e_cycle_status;
-  logic [`REG_SIZE] e_imm_i, e_imm_b, e_imm_u, e_imm_s;
+  logic [`REG_SIZE] e_imm_i, e_imm_b, e_imm_u, e_imm_s, e_imm_j;
 
   // CLA adder signals
   logic [`REG_SIZE] e_cla_sum;
@@ -455,6 +496,197 @@ module DatapathPipelined (
       .sum(e_cla_sum)
   );
 
+  logic div_data_hazard;
+  // Divider inputs and outputs
+  logic [`REG_SIZE] div_i_dividend;  // Dividend for the divider
+  logic [`REG_SIZE] div_i_divisor;  // Divisor for the divider
+  logic [`REG_SIZE] div_o_quotient;  // Quotient output from the divider
+  logic [`REG_SIZE] div_o_remainder;  // Remainder output from the divider
+
+  // Structure to track in-flight division operations
+  typedef struct packed {
+    logic              valid;     // Is this entry valid?
+    logic [4:0]        rd_addr;   // Destination register
+    logic              write_rd;  // Write to register file?
+    logic [`REG_SIZE]  pc;        // PC of the instruction
+    logic [`INSN_SIZE] insn;      // Instruction bits
+    logic [3:0]        div_op;    // Operation type (DIV, DIVU, REM, REMU)
+    logic              rs1_sign;  // Sign of rs1 (for signed ops)
+    logic              rs2_sign;  // Sign of rs2 (for signed ops)
+  } div_tracker_t;
+
+  // Shift register for tracking up to 8 in-flight divisions
+  div_tracker_t div_tracker[8];
+
+
+
+  // Instantiate the pipelined divider
+  DividerUnsignedPipelined divider (
+      .clk(clk),
+      .rst(rst),
+      .stall(1'b0),  // We don't stall the divider internally
+      .i_dividend(div_i_dividend),
+      .i_divisor(div_i_divisor),
+      .o_quotient(div_o_quotient),
+      .o_remainder(div_o_remainder)
+  );
+
+  // Division operation detector and tracker
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      for (int i = 0; i < 8; i++) begin
+        div_tracker[i] <= '{
+            valid: 0,
+            rd_addr: 0,
+            write_rd: 0,
+            pc: 0,
+            insn: 0,
+            div_op: 0,
+            rs1_sign: 0,
+            rs2_sign: 0
+        };
+      end
+      div_i_dividend <= 0;
+      div_i_divisor  <= 0;
+
+    end else begin
+      // Shift the tracker entries
+      for (int i = 7; i > 0; i--) begin
+        div_tracker[i] <= div_tracker[i-1];
+      end
+
+      // Check for new division operation
+      if (e_opcode == OpcodeRegReg && e_funct7 == 7'b0000001 && e_insn != 0) begin
+        div_tracker[0].valid <= 1;
+        div_tracker[0].rd_addr <= e_rd_addr;
+        div_tracker[0].write_rd <= e_write_rd;
+        div_tracker[0].pc <= e_pc;
+        div_tracker[0].insn <= e_insn;
+
+        // Set operation type
+        case (e_funct3)
+          3'b100:  div_tracker[0].div_op <= 4'b0001;  // DIV
+          3'b101:  div_tracker[0].div_op <= 4'b0010;  // DIVU
+          3'b110:  div_tracker[0].div_op <= 4'b0100;  // REM
+          3'b111:  div_tracker[0].div_op <= 4'b1000;  // REMU
+          default: div_tracker[0].div_op <= 4'b0000;
+        endcase
+
+        // Store signs for signed operations
+        if (e_funct3 == 3'b100 || e_funct3 == 3'b110) begin
+          div_tracker[0].rs1_sign <= e_rs1_data[31];
+          div_tracker[0].rs2_sign <= e_rs2_data[31];
+        end else begin
+          div_tracker[0].rs1_sign <= 0;
+          div_tracker[0].rs2_sign <= 0;
+        end
+
+        // Feed the divider with sign-corrected inputs
+        case (e_funct3)
+          3'b100, 3'b110: begin  // DIV, REM (signed)
+            div_i_dividend <= e_rs1_data[31] ? (~e_rs1_data + 1) : e_rs1_data;
+            div_i_divisor  <= e_rs2_data[31] ? (~e_rs2_data + 1) : e_rs2_data;
+          end
+          default: begin  // DIVU, REMU (unsigned)
+            div_i_dividend <= e_rs1_data;
+            div_i_divisor  <= e_rs2_data;
+          end
+        endcase
+      end else begin
+        div_tracker[0].valid <= 0;
+        div_tracker[0].rd_addr <= 0;
+        div_tracker[0].write_rd <= 0;
+        div_tracker[0].pc <= 0;
+        div_tracker[0].insn <= 0;
+        div_tracker[0].div_op <= 0;
+        div_tracker[0].rs1_sign <= 0;
+        div_tracker[0].rs2_sign <= 0;
+      end
+    end
+  end
+
+
+  // Enhance division hazard detection
+  // Enhance division hazard detection - stall all instructions after a division
+  // Enhance division hazard detection
+  always_comb begin
+    div_data_hazard = 0;
+
+
+    // Check for any valid division operations in progress
+    for (int i = 0; i < 6; i++) begin
+      if (div_tracker[i].valid) begin
+        if (!d_is_div) begin
+          // Case 1: Non-division instruction after division
+          // $display("i am here 0");
+
+          div_data_hazard = 1;
+          break;
+        end else if ((d_rs1 != 0 && d_rs1 == div_tracker[i].rd_addr) || 
+                         (d_rs2 != 0 && d_rs2 == div_tracker[i].rd_addr)) begin
+          // Case 2: Division instruction that depends on previous division
+          // $display("i am here 1");
+
+          div_data_hazard = 1;
+          break;
+        end
+        // Case 3: Independent back-to-back division - no stall needed
+      end
+    end
+
+    // Also check for division in execute stage that hasn't entered tracker yet
+    if (e_opcode == OpcodeRegReg && e_funct7 == 7'b0000001 && 
+        (e_funct3 == 3'b100 || e_funct3 == 3'b101 || 
+         e_funct3 == 3'b110 || e_funct3 == 3'b111)) begin
+
+      if (!d_is_div) begin
+        // Non-division after division
+        // $display("i am here 2");
+
+        div_data_hazard = 1;
+      end else if ((d_rs1 != 0 && d_rs1 == e_rd_addr) || (d_rs2 != 0 && d_rs2 == e_rd_addr)) begin
+        // Dependent division
+        // $display("i am here 3");
+        div_data_hazard = 1;
+      end
+    end
+  end
+
+  // Add division bypass logic
+  logic use_div_x1_bypass, use_div_x2_bypass;
+  logic [`REG_SIZE] div_bypass_data;
+
+  // Fix bypass logic to check all tracker stages
+  always_comb begin
+    use_div_x1_bypass = 0;
+    use_div_x2_bypass = 0;
+    div_bypass_data   = 0;
+
+    for (int i = 0; i < 8; i++) begin
+      if (div_tracker[i].valid && div_tracker[i].write_rd) begin
+        if (e_rs1_addr != 0 && e_rs1_addr == div_tracker[i].rd_addr) begin
+          use_div_x1_bypass = 1;
+        end
+        if (e_rs2_addr != 0 && e_rs2_addr == div_tracker[i].rd_addr) begin
+          use_div_x2_bypass = 1;
+        end
+        if (use_div_x1_bypass || use_div_x2_bypass) begin
+          case (div_tracker[i].div_op)
+            4'b0001:
+            div_bypass_data = (div_tracker[i].rs1_sign != div_tracker[i].rs2_sign) ? 
+                                             ~div_o_quotient + 1 : div_o_quotient;
+            4'b0010: div_bypass_data = div_o_quotient;
+            4'b0100:
+            div_bypass_data = div_tracker[i].rs1_sign ? ~div_o_remainder + 1 : div_o_remainder;
+            4'b1000: div_bypass_data = div_o_remainder;
+            default: div_bypass_data = 0;
+          endcase
+          break;  // Use most recent result
+        end
+      end
+    end
+  end
+
   // Connect execute stage signals
   always_comb begin
     e_rs1_addr = execute_state.rs1_addr;
@@ -475,6 +707,7 @@ module DatapathPipelined (
     e_imm_b = {{19{e_insn[31]}}, e_insn[31], e_insn[7], e_insn[30:25], e_insn[11:8], 1'b0};
     e_imm_u = {e_insn[31:12], 12'b0};
     e_imm_s = {{20{e_insn[31]}}, e_insn[31:25], e_insn[11:7]};  // Add this line
+    e_imm_j = {{11{e_insn[31]}}, e_insn[31], e_insn[19:12], e_insn[20], e_insn[30:21], 1'b0};
   end
 
   // Bypass control logic
@@ -494,14 +727,17 @@ module DatapathPipelined (
   end
 
   // Apply bypass logic to get actual operand values
+  // Update operand selection with proper priority
   always_comb begin
     // First operand (rs1)
-    if (use_m_x1_bypass) e_rs1_data = m_bypass_data;
+    if (use_div_x1_bypass) e_rs1_data = div_bypass_data;
+    else if (use_m_x1_bypass) e_rs1_data = m_bypass_data;
     else if (use_w_x1_bypass) e_rs1_data = w_bypass_data;
     else e_rs1_data = execute_state.rs1_data;
 
     // Second operand (rs2)
-    if (use_m_x2_bypass) e_rs2_data = m_bypass_data;
+    if (use_div_x2_bypass) e_rs2_data = div_bypass_data;
+    else if (use_m_x2_bypass) e_rs2_data = m_bypass_data;
     else if (use_w_x2_bypass) e_rs2_data = w_bypass_data;
     else e_rs2_data = execute_state.rs2_data;
   end
@@ -518,6 +754,9 @@ module DatapathPipelined (
 
   // ALU operation
   always_comb begin
+    e_branch_taken  = 0;
+    e_branch_target = e_pc + 4;  // Default next PC
+
     case (e_opcode)
       OpcodeLui: begin
         // LUI just passes immediate to result
@@ -580,11 +819,15 @@ module DatapathPipelined (
       // PLACEHOLDER for JAL (Milestone 2)
       OpcodeJal: begin
         e_alu_result = e_pc + 4;  // Return address
+        e_branch_taken = 1;
+        e_branch_target = e_pc + e_imm_j;
       end
 
       // PLACEHOLDER for JALR (Milestone 2)
       OpcodeJalr: begin
-        e_alu_result = e_pc + 4;
+        e_alu_result = e_pc + 4;  // Return address
+        e_branch_taken = 1;  // Indicate that a branch is taken
+        e_branch_target = (e_rs1_data + e_imm_i) & ~32'b1;  // Calculate target address
       end
 
       // PLACEHOLDER for Miscellaneous Memory ops (Milestone 2)
@@ -599,12 +842,12 @@ module DatapathPipelined (
 
       default: e_alu_result = 0;
     endcase
-  end
+    // end
 
-  // Branch handling
-  always_comb begin
-    e_branch_taken  = 0;
-    e_branch_target = e_pc + 4;  // Default next PC
+    // Branch handling
+    // always_comb begin
+    //   e_branch_taken  = 0;
+    //   e_branch_target = e_pc + 4;  // Default next PC
 
     if (e_opcode == OpcodeBranch) begin
       // Branch instruction
@@ -619,7 +862,89 @@ module DatapathPipelined (
         3'b111:  e_branch_taken = (e_rs1_data >= e_rs2_data);  // BGEU
         default: e_branch_taken = 0;
       endcase
+    end else if (e_opcode == OpcodeJal) begin
+      // JAL instruction
+      e_branch_taken  = 1;
+      e_branch_target = e_pc + e_imm_j;  // Jump target
     end
+  end
+
+  // Detect load-use hazard (load in Execute, dependent instruction in Decode)
+  logic load_use_hazard;
+  logic insn_uses_rs1;
+  logic insn_uses_rs2;
+  logic decode_uses_execute_rd;
+  always_comb begin
+    // Detect if Execute stage contains a load instruction
+    logic execute_has_load = (e_opcode == OpcodeLoad);
+
+    case (d_opcode)
+      OpcodeRegReg: begin
+        insn_uses_rs1 = (d_funct3 == 3'b000 || d_funct3 == 3'b001 || d_funct3 == 3'b010 || 
+                      d_funct3 == 3'b011 || d_funct3 == 3'b100 || d_funct3 == 3'b101 || 
+                      d_funct3 == 3'b110 || d_funct3 == 3'b111);
+        insn_uses_rs2 = (d_funct3 != 3'b001);
+      end
+      OpcodeRegImm: begin
+        insn_uses_rs1 = 1;
+        insn_uses_rs2 = 0;
+      end
+      OpcodeLoad: begin
+        insn_uses_rs1 = 1;
+        insn_uses_rs2 = 0;
+      end
+      OpcodeStore: begin
+        insn_uses_rs1 = 1;
+        insn_uses_rs2 = 1;
+      end
+      OpcodeJal: begin
+        insn_uses_rs1 = 0;
+        insn_uses_rs2 = 0;
+      end
+      OpcodeJalr: begin
+        insn_uses_rs1 = 1;
+        insn_uses_rs2 = 0;
+      end
+      OpcodeAuipc: begin
+        insn_uses_rs1 = 0;
+        insn_uses_rs2 = 0;
+      end
+      OpcodeLui: begin
+        insn_uses_rs1 = 0;
+        insn_uses_rs2 = 0;
+      end
+      OpcodeBranch: begin
+        insn_uses_rs1 = 1;
+        insn_uses_rs2 = 1;
+      end
+      OpcodeMiscMem: begin
+        insn_uses_rs1 = 0;
+        insn_uses_rs2 = 0;
+      end
+      OpcodeEnviron: begin
+        insn_uses_rs1 = 0;
+        insn_uses_rs2 = 0;
+      end
+      default: begin
+        insn_uses_rs1 = 0;
+        insn_uses_rs2 = 0;
+      end
+    endcase
+
+    // Check if Decode reads a register that Execute's load will write
+    // Only check source registers that are actually used by the instruction
+    // logic decode_uses_execute_rd = (execute_has_load && e_write_rd && e_rd_addr != 0) && 
+    //                               ((d_rs1 == e_rd_addr && d_rs1 != 0) || 
+    //                                (d_rs2 == e_rd_addr && d_rs2 != 0 && 
+    //                                 d_opcode != OpcodeRegImm && d_opcode != OpcodeLui && 
+    //                                 d_opcode != OpcodeJal && d_opcode != OpcodeAuipc));
+
+    decode_uses_execute_rd = (execute_has_load && e_write_rd && e_rd_addr != 0) && 
+                                ((d_rs1 == e_rd_addr && d_rs1 != 0 && insn_uses_rs1) || 
+                                 (d_rs2 == e_rd_addr && d_rs2 != 0 && insn_uses_rs2));
+
+    // Load-use hazard detected
+    load_use_hazard = execute_has_load && decode_uses_execute_rd;
   end
 
   // Disassembly for debugging
@@ -633,25 +958,50 @@ module DatapathPipelined (
 
   // Pass execute results to memory stage
   stage_memory_t memory_state;
+  // Pass execute results to memory stage
   always_ff @(posedge clk) begin
     if (rst) begin
       memory_state <= '{
           pc: 0,
           insn: 0,
           alu_result: 0,
+          rs2_data: 0,
           rd_addr: 0,
           write_rd: 0,
           cycle_status: CYCLE_RESET
       };
     end else begin
+      // if (div_tracker[7].valid) begin
+      //     // Division complete, process result
+      //     logic [`REG_SIZE] div_result;
+      //     case (div_tracker[7].div_op)
+      //         4'b0001: div_result = (div_tracker[7].rs1_sign != div_tracker[7].rs2_sign) ? ~div_o_quotient + 1 : div_o_quotient;  // DIV
+      //         4'b0010: div_result = div_o_quotient;  // DIVU
+      //         4'b0100: div_result = div_tracker[7].rs1_sign ? ~div_o_remainder + 1 : div_o_remainder;  // REM
+      //         4'b1000: div_result = div_o_remainder;  // REMU
+      //         default: div_result = div_o_quotient;
+      //     endcase
+
+      //     memory_state <= '{
+      //         pc: div_tracker[7].pc,
+      //         insn: div_tracker[7].insn,
+      //         alu_result: div_result,
+      //         rs2_data: 0,
+      //         rd_addr: div_tracker[7].rd_addr,
+      //         write_rd: div_tracker[7].write_rd,
+      //         cycle_status: CYCLE_NO_STALL
+      //     };
+      // end else begin
       memory_state <= '{
           pc: e_pc,
           insn: e_insn,
           alu_result: e_alu_result,
+          rs2_data: e_rs2_data,
           rd_addr: e_rd_addr,
           write_rd: e_write_rd,
           cycle_status: e_branch_taken ? CYCLE_TAKEN_BRANCH : e_cycle_status
       };
+      // end
     end
   end
 
@@ -660,23 +1010,34 @@ module DatapathPipelined (
   /****************/
 
   // Memory stage signals
-  logic [`REG_SIZE] m_pc, m_alu_result;
+  logic [`REG_SIZE] m_pc, m_alu_result, m_rs2_data;
   logic [`INSN_SIZE] m_insn;
   logic [4:0] m_rd_addr;
   logic m_write_rd;
   cycle_status_e m_cycle_status;
+  logic use_w_m_bypass;
+  logic [`OPCODE_SIZE] m_opcode;
+
 
   // Connect memory stage signals
   always_comb begin
     m_pc = memory_state.pc;
     m_insn = memory_state.insn;
     m_alu_result = memory_state.alu_result;
+    m_rs2_data = memory_state.rs2_data;  // Connect rs2_data
+
     m_rd_addr = memory_state.rd_addr;
     m_write_rd = memory_state.write_rd;
     m_cycle_status = memory_state.cycle_status;
+    m_opcode = m_insn[6:0];
 
     // Data for MX bypass
     m_bypass_data = m_alu_result;
+
+    // WM Bypass: Detect if we need to forward data from Writeback to Memory
+    // This matters for store instructions where rs2 contains the data to store
+    use_w_m_bypass = (m_opcode == OpcodeStore) && (memory_state.insn[24:20] != 0) &&  // rs2 != x0
+    (memory_state.insn[24:20] == w_rd_addr) && w_write_rd;
   end
 
   // Passing ALU result through to Writeback stage
@@ -703,20 +1064,100 @@ module DatapathPipelined (
           cycle_status: CYCLE_RESET
       };
     end else begin
-      writeback_state <= '{
-          pc: m_pc,
-          insn: m_insn,
-          result: m_alu_result,
-          rd_addr: m_rd_addr,
-          write_rd: m_write_rd,
-          cycle_status:
-          (
-          m_cycle_status == CYCLE_TAKEN_BRANCH && m_insn != 0
-          ) ?
-          CYCLE_NO_STALL
-          :
-          m_cycle_status
-      };
+      // Determine result based on instruction type
+      logic [`REG_SIZE] result_value;
+      if (div_tracker[7].valid) begin
+        // Division result is ready
+        case (div_tracker[7].div_op)
+          4'b0001:
+          result_value = (div_tracker[7].rs1_sign != div_tracker[7].rs2_sign) ? ~div_o_quotient + 1 : div_o_quotient;  // DIV
+          4'b0010: result_value = div_o_quotient;  // DIVU
+          4'b0100:
+          result_value = div_tracker[7].rs1_sign ? ~div_o_remainder + 1 : div_o_remainder;  // REM
+          4'b1000: result_value = div_o_remainder;  // REMU
+          default: result_value = div_o_quotient;
+        endcase
+
+        writeback_state <= '{
+            pc: div_tracker[7].pc,
+            insn: div_tracker[7].insn,
+            result: result_value,
+            rd_addr: div_tracker[7].rd_addr,
+            write_rd: div_tracker[7].write_rd,
+            cycle_status: CYCLE_NO_STALL
+        };
+      end else begin
+        // Normal operation
+        // In the writeback stage, where load data is processed:
+        if (m_opcode == OpcodeLoad) begin
+          case (m_insn[14:12])  // funct3 field
+            3'b001: begin  // LH (load halfword)
+              case (m_alu_result[1])  // Check the halfword offset
+                1'b0:
+                result_value = {
+                  {16{load_data_from_dmem[15]}}, load_data_from_dmem[15:0]
+                };  // Lower halfword
+                1'b1:
+                result_value = {
+                  {16{load_data_from_dmem[31]}}, load_data_from_dmem[31:16]
+                };  // Upper halfword
+              endcase
+            end
+            3'b000: begin  // LB (load byte)
+              case (m_alu_result[1:0])  // Check the byte offset
+                2'b00:
+                result_value = {{24{load_data_from_dmem[7]}}, load_data_from_dmem[7:0]};  // Byte 0
+                2'b01:
+                result_value = {
+                  {24{load_data_from_dmem[15]}}, load_data_from_dmem[15:8]
+                };  // Byte 1
+                2'b10:
+                result_value = {
+                  {24{load_data_from_dmem[23]}}, load_data_from_dmem[23:16]
+                };  // Byte 2
+                2'b11:
+                result_value = {
+                  {24{load_data_from_dmem[31]}}, load_data_from_dmem[31:24]
+                };  // Byte 3
+              endcase
+            end
+            3'b010: begin  // LW (load word)
+              result_value = load_data_from_dmem;  // No extraction needed for word loads
+            end
+            3'b100: begin  // LBU (load byte unsigned)
+              case (m_alu_result[1:0])
+                2'b00: result_value = {24'b0, load_data_from_dmem[7:0]};  // Byte 0
+                2'b01: result_value = {24'b0, load_data_from_dmem[15:8]};  // Byte 1
+                2'b10: result_value = {24'b0, load_data_from_dmem[23:16]};  // Byte 2
+                2'b11: result_value = {24'b0, load_data_from_dmem[31:24]};  // Byte 3
+              endcase
+            end
+            3'b101: begin  // LHU (load halfword unsigned)
+              case (m_alu_result[1])
+                1'b0: result_value = {16'b0, load_data_from_dmem[15:0]};  // Lower halfword
+                1'b1: result_value = {16'b0, load_data_from_dmem[31:16]};  // Upper halfword
+              endcase
+            end
+            default: result_value = load_data_from_dmem;
+          endcase
+        end else begin
+          result_value = m_alu_result;  // ALU result for non-load instructions
+        end
+        writeback_state <= '{
+            pc: m_pc,
+            insn: m_insn,
+            result: result_value,
+            rd_addr: m_rd_addr,
+            write_rd: m_write_rd,
+            cycle_status:
+            (
+            m_cycle_status == CYCLE_TAKEN_BRANCH && m_insn != 0
+            ) ?
+            CYCLE_NO_STALL
+            :
+            m_cycle_status
+        };
+      end
     end
   end
 
@@ -761,6 +1202,76 @@ module DatapathPipelined (
 
   // Detect halt condition when ECALL is encountered
   assign halt = (w_insn[6:0] == OpcodeEnviron) && (w_pc != 0);
+
+  // Memory stage connections to data memory /////////
+  always_comb begin
+    logic [`REG_SIZE] store_data;
+
+    // Default values
+    addr_to_dmem = 0;
+    store_data_to_dmem = 0;
+    store_we_to_dmem = 4'b0000;
+
+    if (m_opcode == OpcodeLoad) begin
+      // Load instruction: align address to 4-byte boundary
+      addr_to_dmem = {m_alu_result[31:2], 2'b00};
+    end else if (m_opcode == OpcodeStore) begin
+      // Store instruction: align address to 4-byte boundary 
+      addr_to_dmem = {m_alu_result[31:2], 2'b00};
+
+      // Determine store data with proper bypassing
+      if (use_w_m_bypass) store_data = w_result;
+      else store_data = m_rs2_data;
+
+      // Generate appropriate byte enable signals based on funct3
+      case (m_insn[14:12])
+        3'b000: begin  // SB - store byte
+          // Position the byte data based on the unaligned address
+          case (m_alu_result[1:0])
+            2'b00: begin
+              store_data_to_dmem = {24'b0, store_data[7:0]};
+              store_we_to_dmem   = 4'b0001;
+            end
+            2'b01: begin
+              store_data_to_dmem = {16'b0, store_data[7:0], 8'b0};
+              store_we_to_dmem   = 4'b0010;
+            end
+            2'b10: begin
+              store_data_to_dmem = {8'b0, store_data[7:0], 16'b0};
+              store_we_to_dmem   = 4'b0100;
+            end
+            2'b11: begin
+              store_data_to_dmem = {store_data[7:0], 24'b0};
+              store_we_to_dmem   = 4'b1000;
+            end
+          endcase
+        end
+
+        3'b001: begin  // SH - store halfword
+          case (m_alu_result[1])
+            1'b0: begin
+              // Lower halfword
+              store_data_to_dmem = {16'b0, store_data[15:0]};
+              store_we_to_dmem   = 4'b0011;
+            end
+            1'b1: begin
+              // Upper halfword
+              store_data_to_dmem = {store_data[15:0], 16'b0};
+              store_we_to_dmem   = 4'b1100;
+            end
+          endcase
+        end
+
+        3'b010: begin  // SW - store word
+          store_data_to_dmem = store_data;
+          store_we_to_dmem   = 4'b1111;
+        end
+
+        default: store_we_to_dmem = 4'b0000;
+      endcase
+    end
+  end
+  //////////////////////////////////////////////
 
 endmodule
 
