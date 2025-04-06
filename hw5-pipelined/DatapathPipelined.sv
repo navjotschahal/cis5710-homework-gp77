@@ -314,6 +314,7 @@ module DatapathPipelined (
   logic [`REG_SIZE] d_imm_b;
   logic [`REG_SIZE] d_imm_u;
   logic [`REG_SIZE] d_imm_j;
+logic d_is_div;
 
   always_comb begin
     // Parse instruction fields
@@ -323,6 +324,11 @@ module DatapathPipelined (
     d_rs1 = decode_state.insn[19:15];
     d_rs2 = decode_state.insn[24:20];
     d_funct7 = decode_state.insn[31:25];
+
+    d_is_div = (d_opcode == OpcodeRegReg && d_funct7 == 7'b0000001 && 
+             (d_funct3 == 3'b100 || d_funct3 == 3'b101 || 
+              d_funct3 == 3'b110 || d_funct3 == 3'b111));
+  
 
     // Generate immediates for different instruction formats
     d_imm_i = {{20{decode_state.insn[31]}}, decode_state.insn[31:20]};
@@ -350,7 +356,7 @@ module DatapathPipelined (
   logic d_write_rd;
   always_comb begin
     case (d_opcode)
-      OpcodeLoad, OpcodeRegImm, OpcodeRegReg, OpcodeLui, OpcodeJal, OpcodeJalr: d_write_rd = 1'b1;
+      OpcodeLoad, OpcodeRegImm, OpcodeRegReg, OpcodeLui, OpcodeJal, OpcodeJalr, OpcodeAuipc: d_write_rd = 1'b1;
       default: d_write_rd = 1'b0;
     endcase
   end
@@ -448,7 +454,7 @@ module DatapathPipelined (
   logic [6:0] e_funct7;
   logic [`OPCODE_SIZE] e_opcode;
   cycle_status_e e_cycle_status;
-  logic [`REG_SIZE] e_imm_i, e_imm_b, e_imm_u, e_imm_s;
+  logic [`REG_SIZE] e_imm_i, e_imm_b, e_imm_u, e_imm_s, e_imm_j;
 
   // CLA adder signals
   logic [`REG_SIZE] e_cla_sum;
@@ -589,20 +595,52 @@ always_ff @(posedge clk ) begin
     end
 end
 
+
   // Enhance division hazard detection
+// Enhance division hazard detection - stall all instructions after a division
+// Enhance division hazard detection
 always_comb begin
     div_data_hazard = 0;
-    for (int i = 0; i < 8; i++) begin
-        if (div_tracker[i].valid && div_tracker[i].rd_addr != 0 && e_insn != 0 &&
-            ((e_rs1_addr == div_tracker[i].rd_addr) || (e_rs2_addr == div_tracker[i].rd_addr))) begin
-            div_data_hazard = 1;
+    
+    
+    // Check for any valid division operations in progress
+    for (int i = 0; i < 6; i++) begin
+        if (div_tracker[i].valid) begin
+            if (!d_is_div) begin
+                // Case 1: Non-division instruction after division
+                            // $display("i am here 0");
+
+                div_data_hazard = 1;
+                break;
+            end else if ((d_rs1 != 0 && d_rs1 == div_tracker[i].rd_addr) || 
+                         (d_rs2 != 0 && d_rs2 == div_tracker[i].rd_addr)) begin
+                // Case 2: Division instruction that depends on previous division
+                            // $display("i am here 1");
+
+                div_data_hazard = 1;
+                break;
+            end
+            // Case 3: Independent back-to-back division - no stall needed
         end
     end
-    // Add explicit check for division instruction depending on in-flight division
-    // if (e_opcode == OpcodeRegReg && e_funct7 == 7'b0000001 && 
-    //     (d_opcode == OpcodeRegReg && d_funct7 == 7'b0000001)) begin
-    //     div_data_hazard = 1;
-    // end
+    
+    // Also check for division in execute stage that hasn't entered tracker yet
+    if (e_opcode == OpcodeRegReg && e_funct7 == 7'b0000001 && 
+        (e_funct3 == 3'b100 || e_funct3 == 3'b101 || 
+         e_funct3 == 3'b110 || e_funct3 == 3'b111)) begin
+        
+        if (!d_is_div) begin
+            // Non-division after division
+                        // $display("i am here 2");
+
+            div_data_hazard = 1;
+        end else if ((d_rs1 != 0 && d_rs1 == e_rd_addr) || 
+                  (d_rs2 != 0 && d_rs2 == e_rd_addr)) begin
+            // Dependent division
+            // $display("i am here 3");
+            div_data_hazard = 1;
+                  end
+    end
 end
 
 // Add division bypass logic
@@ -659,6 +697,7 @@ end
     e_imm_b = {{19{e_insn[31]}}, e_insn[31], e_insn[7], e_insn[30:25], e_insn[11:8], 1'b0};
     e_imm_u = {e_insn[31:12], 12'b0};
     e_imm_s = {{20{e_insn[31]}}, e_insn[31:25], e_insn[11:7]};  // Add this line
+    e_imm_j = {{11{e_insn[31]}}, e_insn[31], e_insn[19:12], e_insn[20], e_insn[30:21], 1'b0};
   end
 
   // Bypass control logic
@@ -771,7 +810,9 @@ end
 
       // PLACEHOLDER for JALR (Milestone 2)
       OpcodeJalr: begin
-        e_alu_result = e_pc + 4;
+        e_alu_result = e_pc + 4;  // Return address
+        e_branch_taken = 1;  // Indicate that a branch is taken
+        e_branch_target = (e_rs1_data + e_imm_i) & ~32'b1;  // Calculate target address
       end
 
       // PLACEHOLDER for Miscellaneous Memory ops (Milestone 2)
@@ -806,22 +847,90 @@ end
         3'b111:  e_branch_taken = (e_rs1_data >= e_rs2_data);  // BGEU
         default: e_branch_taken = 0;
       endcase
-    end
+    end else if (e_opcode == OpcodeJal) begin
+    // JAL instruction
+    e_branch_taken = 1;
+    e_branch_target = e_pc + e_imm_j;  // Jump target
+  end
   end
 
-  // Detect load-use hazard (load in Execute, dependent instruction in Decode)
-  logic load_use_hazard;
-  always_comb begin
-    // Detect if Execute stage contains a load instruction
-    logic execute_has_load = (e_opcode == OpcodeLoad);
-    
-    // Check if Decode reads a register that Execute's load will write
-    logic decode_uses_execute_rd = (execute_has_load && e_write_rd && e_rd_addr != 0) && 
-                                  ((d_rs1 == e_rd_addr) || (d_rs2 == e_rd_addr));
-    
-    // Load-use hazard detected
-    load_use_hazard = execute_has_load && decode_uses_execute_rd;
-  end
+ // Detect load-use hazard (load in Execute, dependent instruction in Decode)
+logic load_use_hazard;
+logic insn_uses_rs1;
+logic insn_uses_rs2;
+logic decode_uses_execute_rd;
+always_comb begin
+  // Detect if Execute stage contains a load instruction
+  logic execute_has_load = (e_opcode == OpcodeLoad);
+
+  case (d_opcode)
+    OpcodeRegReg: begin
+      insn_uses_rs1 = (d_funct3 == 3'b000 || d_funct3 == 3'b001 || d_funct3 == 3'b010 || 
+                      d_funct3 == 3'b011 || d_funct3 == 3'b100 || d_funct3 == 3'b101 || 
+                      d_funct3 == 3'b110 || d_funct3 == 3'b111);
+      insn_uses_rs2 = (d_funct3 != 3'b001);
+    end
+    OpcodeRegImm: begin
+      insn_uses_rs1 = 1;
+      insn_uses_rs2 = 0;
+    end
+    OpcodeLoad: begin
+      insn_uses_rs1 = 1;
+      insn_uses_rs2 = 0;
+    end
+    OpcodeStore: begin
+      insn_uses_rs1 = 1;
+      insn_uses_rs2 = 1;
+    end
+    OpcodeJal: begin
+      insn_uses_rs1 = 0;
+      insn_uses_rs2 = 0;
+    end
+    OpcodeJalr: begin
+      insn_uses_rs1 = 1;
+      insn_uses_rs2 = 0;
+    end
+    OpcodeAuipc: begin
+      insn_uses_rs1 = 0;
+      insn_uses_rs2 = 0;
+    end
+    OpcodeLui: begin
+      insn_uses_rs1 = 0;
+      insn_uses_rs2 = 0;
+    end
+    OpcodeBranch: begin
+      insn_uses_rs1 = 1;
+      insn_uses_rs2 = 1;
+    end
+    OpcodeMiscMem: begin
+      insn_uses_rs1 = 0;
+      insn_uses_rs2 = 0;
+    end
+    OpcodeEnviron: begin
+      insn_uses_rs1 = 0;
+      insn_uses_rs2 = 0;
+    end
+    default: begin
+      insn_uses_rs1 = 0;
+      insn_uses_rs2 = 0;
+    end
+  endcase
+  
+  // Check if Decode reads a register that Execute's load will write
+  // Only check source registers that are actually used by the instruction
+  // logic decode_uses_execute_rd = (execute_has_load && e_write_rd && e_rd_addr != 0) && 
+  //                               ((d_rs1 == e_rd_addr && d_rs1 != 0) || 
+  //                                (d_rs2 == e_rd_addr && d_rs2 != 0 && 
+  //                                 d_opcode != OpcodeRegImm && d_opcode != OpcodeLui && 
+  //                                 d_opcode != OpcodeJal && d_opcode != OpcodeAuipc));
+  
+  decode_uses_execute_rd = (execute_has_load && e_write_rd && e_rd_addr != 0) && 
+                                ((d_rs1 == e_rd_addr && d_rs1 != 0 && insn_uses_rs1) || 
+                                 (d_rs2 == e_rd_addr && d_rs2 != 0 && insn_uses_rs2));
+  
+  // Load-use hazard detected
+  load_use_hazard = execute_has_load && decode_uses_execute_rd;
+end
 
   // Disassembly for debugging
   wire [255:0] e_disasm;
