@@ -521,6 +521,8 @@ typedef struct packed {
     logic [3:0] div_op;       // Operation type (DIV, DIVU, REM, REMU)
     logic rs1_sign;           // Sign of rs1 (for signed ops)
     logic rs2_sign;           // Sign of rs2 (for signed ops)
+        logic [`REG_SIZE] rs1_data; // Original dividend value
+
 } div_tracker_t;
 
 // Shift register for tracking up to 8 in-flight divisions
@@ -543,7 +545,7 @@ div_tracker_t div_tracker[8];
 always_ff @(posedge clk ) begin
     if (rst) begin
         for (int i = 0; i < 8; i++) begin
-            div_tracker[i] <= '{valid: 0, rd_addr: 0, write_rd: 0, pc: 0, insn: 0, div_op: 0, rs1_sign: 0, rs2_sign: 0};
+            div_tracker[i] <= '{valid: 0, rd_addr: 0, write_rd: 0, pc: 0, insn: 0, div_op: 0, rs1_sign: 0, rs2_sign: 0, rs1_data: 0};
         end
         div_i_dividend <= 0;
         div_i_divisor <= 0;
@@ -561,15 +563,28 @@ always_ff @(posedge clk ) begin
             div_tracker[0].write_rd <= e_write_rd;
             div_tracker[0].pc <= e_pc;
             div_tracker[0].insn <= e_insn;
+            div_tracker[0].rs1_data <= e_rs1_data;  // Store original dividend value
             
-            // Set operation type
-            case (e_funct3)
-                3'b100: div_tracker[0].div_op <= 4'b0001;  // DIV
-                3'b101: div_tracker[0].div_op <= 4'b0010;  // DIVU
-                3'b110: div_tracker[0].div_op <= 4'b0100;  // REM
-                3'b111: div_tracker[0].div_op <= 4'b1000;  // REMU
-                default: div_tracker[0].div_op <= 4'b0000;
-            endcase
+            // Check for division by zero
+            if (e_rs2_data == 0) begin
+                // Handle division by zero according to RISC-V spec
+                case (e_funct3)
+                    3'b100: div_tracker[0].div_op <= 4'b1111;  // DIV - special flag for div by zero
+                    3'b101: div_tracker[0].div_op <= 4'b1110;  // DIVU - special flag for div by zero
+                    3'b110: div_tracker[0].div_op <= 4'b1101;  // REM - special flag for rem by zero
+                    3'b111: div_tracker[0].div_op <= 4'b1100;  // REMU - special flag for rem by zero
+                    default: div_tracker[0].div_op <= 4'b0000;
+                endcase
+            end else begin
+                // Normal operation codes
+                case (e_funct3)
+                    3'b100: div_tracker[0].div_op <= 4'b0001;  // DIV
+                    3'b101: div_tracker[0].div_op <= 4'b0010;  // DIVU
+                    3'b110: div_tracker[0].div_op <= 4'b0100;  // REM
+                    3'b111: div_tracker[0].div_op <= 4'b1000;  // REMU
+                    default: div_tracker[0].div_op <= 4'b0000;
+                endcase
+            end
             
             // Store signs for signed operations
             if (e_funct3 == 3'b100 || e_funct3 == 3'b110) begin
@@ -600,6 +615,7 @@ always_ff @(posedge clk ) begin
             div_tracker[0].div_op <= 0;
             div_tracker[0].rs1_sign <= 0;
             div_tracker[0].rs2_sign <= 0;
+            div_tracker[0].rs1_data <= 0;
         end
     end
 end
@@ -807,7 +823,7 @@ logic e_is_mul;
     3'b001: begin
       if (e_funct7 == 7'b0000001) begin
         // MULH - upper 32 bits of signed x signed product
-        e_alu_result = (($signed(e_rs1_data) * $signed(e_rs2_data)) >> 32);
+e_alu_result = 32'(((64'($signed(e_rs1_data)) * 64'($signed(e_rs2_data))) >> 32));
       end else begin
         e_alu_result = e_rs1_data << e_rs2_data[4:0];  // SLL
       end
@@ -815,16 +831,14 @@ logic e_is_mul;
     3'b010: begin
       if (e_funct7 == 7'b0000001) begin
         // MULHSU - upper 32 bits of signed x unsigned product
-        e_alu_result = (($signed(e_rs1_data) * $unsigned(e_rs2_data)) >> 32);
-      end else begin
+e_alu_result = 32'(((64'($signed(e_rs1_data)) * 64'($unsigned(e_rs2_data))) >> 32));      end else begin
         e_alu_result = {31'b0, $signed(e_rs1_data) < $signed(e_rs2_data)};  // SLT
       end
     end
     3'b011: begin
       if (e_funct7 == 7'b0000001) begin
         // MULHU - upper 32 bits of unsigned x unsigned product
-        e_alu_result = (($unsigned(e_rs1_data) * $unsigned(e_rs2_data)) >> 32);
-      end else begin
+e_alu_result = 32'(((64'($unsigned(e_rs1_data)) * 64'($unsigned(e_rs2_data))) >> 32));      end else begin
         e_alu_result = {31'b0, e_rs1_data < e_rs2_data};  // SLTU
       end
     end
@@ -1101,12 +1115,18 @@ end
         if (div_tracker[7].valid) begin
             // Division result is ready
             case (div_tracker[7].div_op)
-                4'b0001: result_value = (div_tracker[7].rs1_sign != div_tracker[7].rs2_sign) ? ~div_o_quotient + 1 : div_o_quotient;  // DIV
-                4'b0010: result_value = div_o_quotient;  // DIVU
-                4'b0100: result_value = div_tracker[7].rs1_sign ? ~div_o_remainder + 1 : div_o_remainder;  // REM
-                4'b1000: result_value = div_o_remainder;  // REMU
-                default: result_value = div_o_quotient;
-            endcase
+    4'b0001: result_value = (div_tracker[7].rs1_sign != div_tracker[7].rs2_sign) ? 
+                         ~div_o_quotient + 1 : div_o_quotient;  // DIV
+    4'b0010: result_value = div_o_quotient;  // DIVU
+    4'b0100: result_value = div_tracker[7].rs1_sign ? 
+                         ~div_o_remainder + 1 : div_o_remainder;  // REM
+    4'b1000: result_value = div_o_remainder;  // REMU
+    4'b1111: result_value = 32'hFFFFFFFF;  // DIV by zero
+    4'b1110: result_value = 32'hFFFFFFFF;  // DIVU by zero
+    4'b1101: result_value = div_tracker[7].rs1_data;  // REM by zero
+    4'b1100: result_value = div_tracker[7].rs1_data;  // REMU by zero
+    default: result_value = div_o_quotient;
+endcase
 
             writeback_state <= '{
                 pc: div_tracker[7].pc,
