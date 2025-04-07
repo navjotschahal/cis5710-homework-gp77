@@ -315,6 +315,8 @@ module DatapathPipelined (
   logic [`REG_SIZE] d_imm_u;
   logic [`REG_SIZE] d_imm_j;
 logic d_is_div;
+logic d_is_mul;
+
 
   always_comb begin
     // Parse instruction fields
@@ -328,6 +330,11 @@ logic d_is_div;
     d_is_div = (d_opcode == OpcodeRegReg && d_funct7 == 7'b0000001 && 
              (d_funct3 == 3'b100 || d_funct3 == 3'b101 || 
               d_funct3 == 3'b110 || d_funct3 == 3'b111));
+
+              // Detect multiply instructions (MUL, MULH, MULHSU, MULHU)
+  d_is_mul = (d_opcode == OpcodeRegReg && d_funct7 == 7'b0000001 && 
+           (d_funct3 == 3'b000 || d_funct3 == 3'b001 || 
+            d_funct3 == 3'b010 || d_funct3 == 3'b011));
   
 
     // Generate immediates for different instruction formats
@@ -460,6 +467,8 @@ logic d_is_div;
   logic [`REG_SIZE] e_cla_sum;
   logic [`REG_SIZE] e_cla_b_input;
 
+// Add execute stage detection for division and multiply instructions
+
   // CLA adder input logic
   always_comb begin
     case (e_opcode)
@@ -546,7 +555,7 @@ always_ff @(posedge clk ) begin
         end
         
         // Check for new division operation
-        if (e_opcode == OpcodeRegReg && e_funct7 == 7'b0000001 && e_insn != 0) begin
+        if (e_is_div) begin
             div_tracker[0].valid <= 1;
             div_tracker[0].rd_addr <= e_rd_addr;
             div_tracker[0].write_rd <= e_write_rd;
@@ -608,14 +617,14 @@ always_comb begin
         if (div_tracker[i].valid) begin
             if (!d_is_div) begin
                 // Case 1: Non-division instruction after division
-                            // $display("i am here 0");
+                            $display("i am here 0");
 
                 div_data_hazard = 1;
                 break;
             end else if ((d_rs1 != 0 && d_rs1 == div_tracker[i].rd_addr) || 
                          (d_rs2 != 0 && d_rs2 == div_tracker[i].rd_addr)) begin
                 // Case 2: Division instruction that depends on previous division
-                            // $display("i am here 1");
+                            $display("i am here 1");
 
                 div_data_hazard = 1;
                 break;
@@ -631,13 +640,13 @@ always_comb begin
         
         if (!d_is_div) begin
             // Non-division after division
-                        // $display("i am here 2");
+                        $display("i am here 2");
 
             div_data_hazard = 1;
         end else if ((d_rs1 != 0 && d_rs1 == e_rd_addr) || 
                   (d_rs2 != 0 && d_rs2 == e_rd_addr)) begin
             // Dependent division
-            // $display("i am here 3");
+            $display("i am here 3");
             div_data_hazard = 1;
                   end
     end
@@ -677,6 +686,9 @@ always_comb begin
     end
 end
 
+logic e_is_div;
+logic e_is_mul;
+
   // Connect execute stage signals
   always_comb begin
     e_rs1_addr = execute_state.rs1_addr;
@@ -698,6 +710,16 @@ end
     e_imm_u = {e_insn[31:12], 12'b0};
     e_imm_s = {{20{e_insn[31]}}, e_insn[31:25], e_insn[11:7]};  // Add this line
     e_imm_j = {{11{e_insn[31]}}, e_insn[31], e_insn[19:12], e_insn[20], e_insn[30:21], 1'b0};
+
+    // Detect division instructions in execute stage
+  e_is_div = (e_opcode == OpcodeRegReg && e_funct7 == 7'b0000001 && 
+             (e_funct3 == 3'b100 || e_funct3 == 3'b101 || 
+              e_funct3 == 3'b110 || e_funct3 == 3'b111));
+              
+  // Detect multiply instructions in execute stage
+  e_is_mul = (e_opcode == OpcodeRegReg && e_funct7 == 7'b0000001 && 
+             (e_funct3 == 3'b000 || e_funct3 == 3'b001 || 
+              e_funct3 == 3'b010 || e_funct3 == 3'b011));
   end
 
   // Bypass control logic
@@ -772,24 +794,50 @@ end
       end
 
       OpcodeRegReg: begin
-        // R-type ALU operations
-        case (e_funct3)
-          3'b000: begin
-            e_alu_result = e_cla_sum;  // ADD/SUB
-          end
-          3'b001:  e_alu_result = e_rs1_data << e_rs2_data[4:0];  // SLL
-          3'b010:  e_alu_result = {31'b0, $signed(e_rs1_data) < $signed(e_rs2_data)};  // SLT
-          3'b011:  e_alu_result = {31'b0, e_rs1_data < e_rs2_data};  // SLTU
-          3'b100:  e_alu_result = e_rs1_data ^ e_rs2_data;  // XOR
-          3'b101: begin
-            if (e_funct7[5]) e_alu_result = $signed(e_rs1_data) >>> e_rs2_data[4:0];  // SRA
-            else e_alu_result = e_rs1_data >> e_rs2_data[4:0];  // SRL
-          end
-          3'b110:  e_alu_result = e_rs1_data | e_rs2_data;  // OR
-          3'b111:  e_alu_result = e_rs1_data & e_rs2_data;  // AND
-          default: e_alu_result = 0;
-        endcase
+  // R-type ALU operations
+  case (e_funct3)
+    3'b000: begin
+      if (e_funct7 == 7'b0000001) begin
+        // MUL - lower 32 bits of signed x signed product
+        e_alu_result = $signed(e_rs1_data) * $signed(e_rs2_data);
+      end else begin
+        e_alu_result = e_cla_sum;  // ADD/SUB
       end
+    end
+    3'b001: begin
+      if (e_funct7 == 7'b0000001) begin
+        // MULH - upper 32 bits of signed x signed product
+        e_alu_result = (($signed(e_rs1_data) * $signed(e_rs2_data)) >> 32);
+      end else begin
+        e_alu_result = e_rs1_data << e_rs2_data[4:0];  // SLL
+      end
+    end
+    3'b010: begin
+      if (e_funct7 == 7'b0000001) begin
+        // MULHSU - upper 32 bits of signed x unsigned product
+        e_alu_result = (($signed(e_rs1_data) * $unsigned(e_rs2_data)) >> 32);
+      end else begin
+        e_alu_result = {31'b0, $signed(e_rs1_data) < $signed(e_rs2_data)};  // SLT
+      end
+    end
+    3'b011: begin
+      if (e_funct7 == 7'b0000001) begin
+        // MULHU - upper 32 bits of unsigned x unsigned product
+        e_alu_result = (($unsigned(e_rs1_data) * $unsigned(e_rs2_data)) >> 32);
+      end else begin
+        e_alu_result = {31'b0, e_rs1_data < e_rs2_data};  // SLTU
+      end
+    end
+    3'b100: e_alu_result = e_rs1_data ^ e_rs2_data;  // XOR
+    3'b101: begin
+      if (e_funct7[5]) e_alu_result = $signed(e_rs1_data) >>> e_rs2_data[4:0];  // SRA
+      else e_alu_result = e_rs1_data >> e_rs2_data[4:0];  // SRL
+    end
+    3'b110: e_alu_result = e_rs1_data | e_rs2_data;  // OR
+    3'b111: e_alu_result = e_rs1_data & e_rs2_data;  // AND
+    default: e_alu_result = 0;
+  endcase
+end
 
       // PLACEHOLDER for Load instructions (Milestone 2)
       OpcodeLoad: begin
