@@ -147,6 +147,12 @@ module DatapathPipelined (
   logic e_branch_taken;
   logic [`REG_SIZE] e_branch_target;
 
+  // for FENCE handelling
+  logic fence_stall_condition;  // Master stall signal for FENCE
+  logic d_is_fence;  // Is FENCE instruction in Decode?
+  logic e_is_fence;  // Is FENCE instruction in Execute?
+  logic m_is_fence;  // Is FENCE instruction in Memory?
+
   // Structures for pipeline stages
   typedef struct packed {
     logic [`REG_SIZE] pc;
@@ -202,7 +208,7 @@ module DatapathPipelined (
 
   // Calculate next PC value
   always_comb begin
-    if (load_use_hazard || div_data_hazard)
+    if (load_use_hazard || div_data_hazard || fence_stall_condition)
       // Stall: keep PC the same during load-use hazard
       f_pc_next = f_pc_current;
     else if (e_branch_taken)
@@ -277,18 +283,35 @@ module DatapathPipelined (
   // TODO: your code here, though you will also need to modify some of the code above
   // TODO: the testbench requires that your register file instance is named `rf`
 
-  // Register containing state passed from Fetch to Decode
+  // // Register containing state passed from Fetch to Decode
+  // stage_decode_t decode_state;
+  // always_ff @(posedge clk) begin
+  //   if (rst) begin
+  //     decode_state <= '{pc: 0, insn: 0, cycle_status: CYCLE_RESET};
+  //   end else if (e_branch_taken) begin
+  //     // Insert bubble if branch taken (pipeline flush)
+  //     decode_state <= '{pc: 0, insn: 0, cycle_status: CYCLE_TAKEN_BRANCH};
+  //   end else if (load_use_hazard || div_data_hazard) begin
+  //     // Keep current decode state during stall (do not update)
+  //     decode_state <= decode_state;
+  //   end else begin
+  //     decode_state <= '{pc: f_pc_current, insn: f_insn, cycle_status: f_cycle_status};
+  //   end
+  // end
+
   stage_decode_t decode_state;
+
+  // Register containing state passed from Fetch to Decode
   always_ff @(posedge clk) begin
     if (rst) begin
       decode_state <= '{pc: 0, insn: 0, cycle_status: CYCLE_RESET};
-    end else if (e_branch_taken) begin
-      // Insert bubble if branch taken (pipeline flush)
+      // Flush ONLY if branch is taken AND pipeline is not stalled for other reasons
+    end else if (e_branch_taken && !(load_use_hazard || div_data_hazard || fence_stall_condition)) begin
       decode_state <= '{pc: 0, insn: 0, cycle_status: CYCLE_TAKEN_BRANCH};
-    end else if (load_use_hazard || div_data_hazard) begin
-      // Keep current decode state during stall (do not update)
-      decode_state <= decode_state;
-    end else begin
+      // Stall if load/use, div hazard, OR FENCE condition is active
+    end else if (load_use_hazard || div_data_hazard || fence_stall_condition) begin
+      decode_state <= decode_state;  // Keep current state (STALL)
+    end else begin  // Normal operation
       decode_state <= '{pc: f_pc_current, insn: f_insn, cycle_status: f_cycle_status};
     end
   end
@@ -330,6 +353,8 @@ module DatapathPipelined (
     d_is_div = (d_opcode == OpcodeRegReg && d_funct7 == 7'b0000001 && 
              (d_funct3 == 3'b100 || d_funct3 == 3'b101 || 
               d_funct3 == 3'b110 || d_funct3 == 3'b111));
+
+    d_is_fence = (d_opcode == OpcodeMiscMem && d_funct3 == 3'b000 && decode_state.insn != 0);
 
     // Detect multiply instructions (MUL, MULH, MULHSU, MULHU)
     d_is_mul = (d_opcode == OpcodeRegReg && d_funct7 == 7'b0000001 && 
@@ -472,6 +497,9 @@ module DatapathPipelined (
 
   // CLA adder input logic
   always_comb begin
+    // detect if FENCE
+    e_is_fence = (e_opcode == OpcodeMiscMem && e_funct3 == 3'b000 && e_insn != 0);
+
     case (e_opcode)
       OpcodeRegImm: begin
         // For I-type instructions
@@ -644,14 +672,14 @@ module DatapathPipelined (
       if (div_tracker[i].valid) begin
         if (!d_is_div) begin
           // Case 1: Non-division instruction after division
-          $display("i am here 0");
+          // $display("i am here 0");
 
           div_data_hazard = 1;
           break;
         end else if ((d_rs1 != 0 && d_rs1 == div_tracker[i].rd_addr) || 
                          (d_rs2 != 0 && d_rs2 == div_tracker[i].rd_addr)) begin
           // Case 2: Division instruction that depends on previous division
-          $display("i am here 1");
+          // $display("i am here 1");
 
           div_data_hazard = 1;
           break;
@@ -667,12 +695,12 @@ module DatapathPipelined (
 
       if (!d_is_div) begin
         // Non-division after division
-        $display("i am here 2");
+        // $display("i am here 2");
 
         div_data_hazard = 1;
       end else if ((d_rs1 != 0 && d_rs1 == e_rd_addr) || (d_rs2 != 0 && d_rs2 == e_rd_addr)) begin
         // Dependent division
-        $display("i am here 3");
+        // $display("i am here 3");
         div_data_hazard = 1;
       end
     end
@@ -1083,6 +1111,8 @@ module DatapathPipelined (
   logic use_w_m_bypass;
   logic [`OPCODE_SIZE] m_opcode;
 
+  // detecting fence
+  // m_is_fence = (m_opcode == OpcodeMiscMem && m_insn[14:12] == 3'b000 && m_insn != 0);
 
   // Connect memory stage signals
   always_comb begin
@@ -1095,6 +1125,8 @@ module DatapathPipelined (
     m_write_rd = memory_state.write_rd;
     m_cycle_status = memory_state.cycle_status;
     m_opcode = m_insn[6:0];
+
+    m_is_fence = (m_opcode == OpcodeMiscMem && m_insn[14:12] == 3'b000 && m_insn != 0);
 
     // Data for MX bypass
     m_bypass_data = m_alu_result;
@@ -1343,6 +1375,19 @@ module DatapathPipelined (
   end
   //////////////////////////////////////////////
 
+  //--------------------------------------------------------------------------
+  // HAZARD CONTROL LOGIC
+  //--------------------------------------------------------------------------
+  always_comb begin
+    // Detect stores in Execute and Memory stages
+    logic e_has_store = (e_opcode == OpcodeStore && e_insn != 0);
+    logic m_has_store = (m_opcode == OpcodeStore && m_insn != 0);
+
+    // Stall only when FENCE is in Decode and there are pending stores
+    fence_stall_condition = d_is_fence && (e_has_store || m_has_store);
+    // load_use_hazard computed elsewhere (Execute Stage)
+    // div_data_hazard computed elsewhere (Execute Stage)
+  end
 endmodule
 
 module MemorySingleCycle #(
