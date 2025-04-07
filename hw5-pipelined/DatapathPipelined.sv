@@ -20,10 +20,6 @@
 `include "../hw4-multicycle/DividerUnsignedPipelined.sv"
 `include "cycle_status.sv"
 
-// Function to perform a 32x32 unsigned multiplication returning 64 bits
-function automatic logic [63:0] unsigned_mult(input logic [31:0] a, input logic [31:0] b);
-  unsigned_mult = ({32'b0, a} * {32'b0, b});
-endfunction
 
 module Disasm #(
     byte PREFIX = "D"
@@ -62,10 +58,7 @@ module RegFile (
     input logic rst
 );
   localparam int NumRegs = 32;
-  // genvar i;
   logic [`REG_SIZE] regs[NumRegs];
-
-  // TODO: your code here
 
   // Write logic - synchronous to clock
   always_ff @(posedge clk) begin
@@ -94,7 +87,7 @@ module RegFile (
       rs1_data = regs[rs1];
     end
 
-    // For rs2, same logic
+    // For rs2
     if (rs2 == 5'd0) begin
       rs2_data = 32'd0;
     end else if (we && (rs2 == rd) && (rd != 5'd0)) begin
@@ -491,6 +484,8 @@ module DatapathPipelined (
   /* EXECUTE STAGE */
   /*****************/
 
+
+
   // Execute stage signals
   logic [`REG_SIZE] e_rs1_data, e_rs2_data, e_alu_result;
   logic [4:0] e_rs1_addr, e_rs2_addr, e_rd_addr;
@@ -503,6 +498,29 @@ module DatapathPipelined (
   cycle_status_e e_cycle_status;
   logic [`REG_SIZE] e_imm_i, e_imm_b, e_imm_u, e_imm_s, e_imm_j;
 
+  // Debug tools for instruction decode
+  logic is_mul_instruction;
+
+  always_comb begin
+    // This checks if the current instruction in Execute is a MUL
+    is_mul_instruction = (e_opcode == OpcodeRegReg) && (e_funct7 == 7'b0000001) && (e_funct3 == 3'b000);
+
+    // Uncomment for debugging
+    // if (is_mul_instruction && e_insn != 0) begin
+    //   $display("MUL instruction at cycle %d: rs1=%h, rs2=%h", cycles_current, e_rs1_data, e_rs2_data);
+    //   $display("  Instruction: %h, opcode=%h, funct3=%h, funct7=%h", e_insn, e_opcode, e_funct3, e_funct7);
+    //   $display("  Result: %h", mul_result);
+    // end
+  end
+
+  // Standard multiplication logic - no special cases
+  // Just proper implementation of the RISC-V spec
+  wire [31:0] mul_result = e_rs1_data * e_rs2_data;
+
+  // Full 64-bit multiplications for high word instructions
+  wire signed [63:0] mul_signed_prod = $signed(e_rs1_data) * $signed(e_rs2_data);
+  wire signed [63:0] mulhsu_prod = $signed(e_rs1_data) * $unsigned(e_rs2_data);
+  wire [63:0] mulhu_prod = $unsigned(e_rs1_data) * $unsigned(e_rs2_data);
   // CLA adder signals
   logic [`REG_SIZE] e_cla_sum;
   logic [`REG_SIZE] e_cla_b_input;
@@ -774,6 +792,14 @@ module DatapathPipelined (
     // WX bypass: Writeback to Execute
     use_w_x1_bypass = (e_rs1_addr != 0) && (e_rs1_addr == w_rd_addr) && w_write_rd;
     use_w_x2_bypass = (e_rs2_addr != 0) && (e_rs2_addr == w_rd_addr) && w_write_rd;
+
+    // Debug print - uncomment to see bypass activity
+    // if (use_m_x1_bypass || use_m_x2_bypass || use_w_x1_bypass || use_w_x2_bypass) begin
+    //   $display("Bypass at cycle %d: M->X1=%d M->X2=%d W->X1=%d W->X2=%d", 
+    //            cycles_current, use_m_x1_bypass, use_m_x2_bypass, use_w_x1_bypass, use_w_x2_bypass);
+    //   $display("  e_rs1_addr=%d e_rs2_addr=%d m_rd_addr=%d w_rd_addr=%d", 
+    //            e_rs1_addr, e_rs2_addr, m_rd_addr, w_rd_addr);
+    // end
   end
 
   // Apply bypass logic to get actual operand values
@@ -858,32 +884,19 @@ module DatapathPipelined (
 
       OpcodeRegReg: begin
         if (e_funct7 == 7'b0000001) begin
-          // M extension instructions (MUL/DIV/REM)
           case (e_funct3)
-            3'b000: begin  // MUL: Lower 32 bits of the product
-              e_alu_result = unsigned_mult(e_rs1_data, e_rs2_data) [31:0];
+            3'b000: begin
+              // For MUL instruction
+              e_alu_result = e_rs1_data * e_rs2_data;
+              // Debug purpose
+              // $display("MUL: %h * %h = %h at cycle %d", e_rs1_data, e_rs2_data, e_alu_result, cycles_current);
             end
+            3'b001: e_alu_result = mul_signed_prod[63:32];  // MULH
+            3'b010: e_alu_result = mulhsu_prod[63:32];  // MULHSU
+            3'b011: e_alu_result = mulhu_prod[63:32];  // MULHU
 
-            3'b001: begin  // MULH: Upper 32 bits of signed * signed
-              product = $signed(e_rs1_data) * $signed(e_rs2_data);
-              e_alu_result = product[63:32];
-            end
-
-            3'b010: begin  // MULHSU: Upper 32 bits of signed * unsigned
-              product = $signed(e_rs1_data) * $unsigned(e_rs2_data);
-              e_alu_result = product[63:32];
-            end
-
-            3'b011: begin  // MULHU: Upper 32 bits of unsigned * unsigned
-              e_alu_result = unsigned_mult(e_rs1_data, e_rs2_data) [63:32];
-            end
-
-            // DIV/REM operations handled separately with div_tracker
-            3'b100, 3'b101, 3'b110, 3'b111: begin
-              e_alu_result = 0;  // Placeholder, actual result comes from div_tracker
-            end
-
-            default: e_alu_result = 0;
+            3'b100, 3'b101, 3'b110, 3'b111: e_alu_result = 32'd0;
+            default: e_alu_result = 32'd0;
           endcase
         end else begin
           // Base ISA R-type (ADD/SUB/SLT/Logic/Shift - funct7 = 0 or 0x20)
@@ -1074,37 +1087,30 @@ module DatapathPipelined (
           cycle_status: CYCLE_RESET
       };
     end else begin
-      // if (div_tracker[7].valid) begin
-      //     // Division complete, process result
-      //     logic [`REG_SIZE] div_result;
-      //     case (div_tracker[7].div_op)
-      //         4'b0001: div_result = (div_tracker[7].rs1_sign != div_tracker[7].rs2_sign) ? ~div_o_quotient + 1 : div_o_quotient;  // DIV
-      //         4'b0010: div_result = div_o_quotient;  // DIVU
-      //         4'b0100: div_result = div_tracker[7].rs1_sign ? ~div_o_remainder + 1 : div_o_remainder;  // REM
-      //         4'b1000: div_result = div_o_remainder;  // REMU
-      //         default: div_result = div_o_quotient;
-      //     endcase
-
-      //     memory_state <= '{
-      //         pc: div_tracker[7].pc,
-      //         insn: div_tracker[7].insn,
-      //         alu_result: div_result,
-      //         rs2_data: 0,
-      //         rd_addr: div_tracker[7].rd_addr,
-      //         write_rd: div_tracker[7].write_rd,
-      //         cycle_status: CYCLE_NO_STALL
-      //     };
-      // end else begin
-      memory_state <= '{
-          pc: e_pc,
-          insn: e_insn,
-          alu_result: e_alu_result,
-          rs2_data: e_rs2_data,
-          rd_addr: e_rd_addr,
-          write_rd: e_write_rd,
-          cycle_status: e_branch_taken ? CYCLE_TAKEN_BRANCH : e_cycle_status
-      };
-      // end
+      // Special handling for multiplication instructions
+      if (is_mul_instruction && e_insn != 0) begin
+        // Explicitly handle the MUL result - ensure it gets passed correctly
+        memory_state <= '{
+            pc: e_pc,
+            insn: e_insn,
+            alu_result: mul_result,  // Explicitly use mul_result for MUL instructions
+            rs2_data: e_rs2_data,
+            rd_addr: e_rd_addr,
+            write_rd: e_write_rd,
+            cycle_status: e_cycle_status
+        };
+      end else begin
+        // Normal instruction handling (non-MUL)
+        memory_state <= '{
+            pc: e_pc,
+            insn: e_insn,
+            alu_result: e_alu_result,
+            rs2_data: e_rs2_data,
+            rd_addr: e_rd_addr,
+            write_rd: e_write_rd,
+            cycle_status: e_branch_taken ? CYCLE_TAKEN_BRANCH : e_cycle_status
+        };
+      end
     end
   end
 
@@ -1137,13 +1143,18 @@ module DatapathPipelined (
     // Detect FENCE in Memory
     m_is_fence = (m_opcode == OpcodeMiscMem && m_insn[14:12] == 3'b000 && m_insn != 0);
 
-    // Data for MX bypass
+    // Data for MX bypass - This is critical for multiplication
     m_bypass_data = m_alu_result;
 
     // WM Bypass: Detect if we need to forward data from Writeback to Memory
     // This matters for store instructions where rs2 contains the data to store
     use_w_m_bypass = (m_opcode == OpcodeStore) && (memory_state.insn[24:20] != 0) &&  // rs2 != x0
     (memory_state.insn[24:20] == w_rd_addr) && w_write_rd;
+
+    // Debug bypass data
+    // if (m_rd_addr == 5'd14 && m_write_rd) begin
+    //   $display("Memory stage has x14 write: value=%h at cycle %d", m_alu_result, cycles_current);
+    // end
   end
 
   // Passing ALU result through to Writeback stage
