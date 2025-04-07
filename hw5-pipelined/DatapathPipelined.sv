@@ -20,7 +20,6 @@
 `include "../hw4-multicycle/DividerUnsignedPipelined.sv"
 `include "cycle_status.sv"
 
-
 module Disasm #(
     byte PREFIX = "D"
 ) (
@@ -58,7 +57,10 @@ module RegFile (
     input logic rst
 );
   localparam int NumRegs = 32;
+  // genvar i;
   logic [`REG_SIZE] regs[NumRegs];
+
+  // TODO: your code here
 
   // Write logic - synchronous to clock
   always_ff @(posedge clk) begin
@@ -87,7 +89,7 @@ module RegFile (
       rs1_data = regs[rs1];
     end
 
-    // For rs2
+    // For rs2, same logic
     if (rs2 == 5'd0) begin
       rs2_data = 32'd0;
     end else if (we && (rs2 == rd) && (rd != 5'd0)) begin
@@ -142,19 +144,8 @@ module DatapathPipelined (
   localparam bit [`OPCODE_SIZE] OpcodeLui = 7'b01_101_11;
 
   // Pipeline control signals
-  logic             e_branch_taken;
+  logic e_branch_taken;
   logic [`REG_SIZE] e_branch_target;
-
-  // --- Add these signals for FENCE detection/stall ---
-  logic             fence_stall_condition;  // Master stall signal for FENCE
-  logic             d_is_fence;  // Is FENCE instruction in Decode?
-  logic             e_is_fence;  // Is FENCE instruction in Execute?
-  logic             m_is_fence;  // Is FENCE instruction in Memory?
-  // --- End FENCE signals ---
-
-  // Hazard signals
-  logic             load_use_hazard;
-  logic             div_data_hazard;
 
   // Structures for pipeline stages
   typedef struct packed {
@@ -210,24 +201,16 @@ module DatapathPipelined (
   cycle_status_e f_cycle_status;
 
   // Calculate next PC value
-  // always_comb begin
-  //   if (load_use_hazard || div_data_hazard)
-  //     // Stall: keep PC the same during load-use hazard
-  //     f_pc_next = f_pc_current;
-  //   else if (e_branch_taken)
-  //     // When branch taken, use branch target from Execute stage
-  //     f_pc_next = e_branch_target;
-  //   else
-  //     // Normal sequential execution
-  //     f_pc_next = f_pc_current + 4;
-  // end
-
-  // Calculate next PC value
   always_comb begin
-    // Add fence_stall_condition to the stall reasons
-    if (load_use_hazard || div_data_hazard || fence_stall_condition) f_pc_next = f_pc_current;
-    else if (e_branch_taken) f_pc_next = e_branch_target;
-    else f_pc_next = f_pc_current + 4;
+    if (load_use_hazard || div_data_hazard)
+      // Stall: keep PC the same during load-use hazard
+      f_pc_next = f_pc_current;
+    else if (e_branch_taken)
+      // When branch taken, use branch target from Execute stage
+      f_pc_next = e_branch_target;
+    else
+      // Normal sequential execution
+      f_pc_next = f_pc_current + 4;
   end
 
   // Program counter update logic
@@ -273,7 +256,7 @@ module DatapathPipelined (
   /****************/
 
   // // this shows how to package up state in a `struct packed`, and how to pass it between stages
-  stage_decode_t decode_state;
+  // stage_decode_t decode_state;
   // always_ff @(posedge clk) begin
   //   if (rst) begin
   //     decode_state <= '{pc: 0, insn: 0, cycle_status: CYCLE_RESET};
@@ -295,34 +278,17 @@ module DatapathPipelined (
   // TODO: the testbench requires that your register file instance is named `rf`
 
   // Register containing state passed from Fetch to Decode
-  // stage_decode_t decode_state;
-  // always_ff @(posedge clk) begin
-  //   if (rst) begin
-  //     decode_state <= '{pc: 0, insn: 0, cycle_status: CYCLE_RESET};
-  //   end else if (e_branch_taken) begin
-  //     // Insert bubble if branch taken (pipeline flush)
-  //     decode_state <= '{pc: 0, insn: 0, cycle_status: CYCLE_TAKEN_BRANCH};
-  //   end else if (load_use_hazard || div_data_hazard) begin
-  //     // Keep current decode state during stall (do not update)
-  //     decode_state <= decode_state;
-  //   end else begin
-  //     decode_state <= '{pc: f_pc_current, insn: f_insn, cycle_status: f_cycle_status};
-  //   end
-  // end
-
-
-
-  // Register containing state passed from Fetch to Decode
+  stage_decode_t decode_state;
   always_ff @(posedge clk) begin
     if (rst) begin
       decode_state <= '{pc: 0, insn: 0, cycle_status: CYCLE_RESET};
-      // Flush ONLY if branch is taken AND pipeline is not stalled for other reasons
-    end else if (e_branch_taken && !(load_use_hazard || div_data_hazard || fence_stall_condition)) begin
+    end else if (e_branch_taken) begin
+      // Insert bubble if branch taken (pipeline flush)
       decode_state <= '{pc: 0, insn: 0, cycle_status: CYCLE_TAKEN_BRANCH};
-      // Stall if load/use, div hazard, OR FENCE condition is active
-    end else if (load_use_hazard || div_data_hazard || fence_stall_condition) begin
-      decode_state <= decode_state;  // Keep current state (STALL)
-    end else begin  // Normal operation
+    end else if (load_use_hazard || div_data_hazard) begin
+      // Keep current decode state during stall (do not update)
+      decode_state <= decode_state;
+    end else begin
       decode_state <= '{pc: f_pc_current, insn: f_insn, cycle_status: f_cycle_status};
     end
   end
@@ -349,11 +315,11 @@ module DatapathPipelined (
   logic [`REG_SIZE] d_imm_u;
   logic [`REG_SIZE] d_imm_j;
   logic d_is_div;
+  logic d_is_mul;
+
 
   always_comb begin
     // Parse instruction fields
-
-
     d_opcode = decode_state.insn[6:0];
     d_rd = decode_state.insn[11:7];
     d_funct3 = decode_state.insn[14:12];
@@ -365,8 +331,10 @@ module DatapathPipelined (
              (d_funct3 == 3'b100 || d_funct3 == 3'b101 || 
               d_funct3 == 3'b110 || d_funct3 == 3'b111));
 
-    // Detect basic FENCE instruction (OpcodeMiscMem, funct3=000)
-    d_is_fence = (d_opcode == OpcodeMiscMem && d_funct3 == 3'b000 && decode_state.insn != 0);
+    // Detect multiply instructions (MUL, MULH, MULHSU, MULHU)
+    d_is_mul = (d_opcode == OpcodeRegReg && d_funct7 == 7'b0000001 && 
+           (d_funct3 == 3'b000 || d_funct3 == 3'b001 || 
+            d_funct3 == 3'b010 || d_funct3 == 3'b011));
 
 
     // Generate immediates for different instruction formats
@@ -484,8 +452,6 @@ module DatapathPipelined (
   /* EXECUTE STAGE */
   /*****************/
 
-
-
   // Execute stage signals
   logic [`REG_SIZE] e_rs1_data, e_rs2_data, e_alu_result;
   logic [4:0] e_rs1_addr, e_rs2_addr, e_rd_addr;
@@ -498,40 +464,14 @@ module DatapathPipelined (
   cycle_status_e e_cycle_status;
   logic [`REG_SIZE] e_imm_i, e_imm_b, e_imm_u, e_imm_s, e_imm_j;
 
-  // Debug tools for instruction decode
-  logic is_mul_instruction;
-
-  always_comb begin
-    // This checks if the current instruction in Execute is a MUL
-    is_mul_instruction = (e_opcode == OpcodeRegReg) && (e_funct7 == 7'b0000001) && (e_funct3 == 3'b000);
-
-    // Uncomment for debugging
-    // if (is_mul_instruction && e_insn != 0) begin
-    //   $display("MUL instruction at cycle %d: rs1=%h, rs2=%h", cycles_current, e_rs1_data, e_rs2_data);
-    //   $display("  Instruction: %h, opcode=%h, funct3=%h, funct7=%h", e_insn, e_opcode, e_funct3, e_funct7);
-    //   $display("  Result: %h", mul_result);
-    // end
-  end
-
-  // Standard multiplication logic - no special cases
-  // Just proper implementation of the RISC-V spec
-  wire [31:0] mul_result = e_rs1_data * e_rs2_data;
-
-  // Full 64-bit multiplications for high word instructions
-  wire signed [63:0] mul_signed_prod = $signed(e_rs1_data) * $signed(e_rs2_data);
-  wire signed [63:0] mulhsu_prod = $signed(e_rs1_data) * $unsigned(e_rs2_data);
-  wire [63:0] mulhu_prod = $unsigned(e_rs1_data) * $unsigned(e_rs2_data);
   // CLA adder signals
   logic [`REG_SIZE] e_cla_sum;
   logic [`REG_SIZE] e_cla_b_input;
 
+  // Add execute stage detection for division and multiply instructions
+
   // CLA adder input logic
   always_comb begin
-
-    // Detect FENCE in Execute
-    e_is_fence = (e_opcode == OpcodeMiscMem && e_funct3 == 3'b000 && e_insn != 0);
-
-
     case (e_opcode)
       OpcodeRegImm: begin
         // For I-type instructions
@@ -565,6 +505,7 @@ module DatapathPipelined (
       .sum(e_cla_sum)
   );
 
+  logic div_data_hazard;
   // Divider inputs and outputs
   logic [`REG_SIZE] div_i_dividend;  // Dividend for the divider
   logic [`REG_SIZE] div_i_divisor;  // Divisor for the divider
@@ -581,6 +522,8 @@ module DatapathPipelined (
     logic [3:0]        div_op;    // Operation type (DIV, DIVU, REM, REMU)
     logic              rs1_sign;  // Sign of rs1 (for signed ops)
     logic              rs2_sign;  // Sign of rs2 (for signed ops)
+    logic [`REG_SIZE]  rs1_data;  // Original dividend value
+
   } div_tracker_t;
 
   // Shift register for tracking up to 8 in-flight divisions
@@ -611,7 +554,8 @@ module DatapathPipelined (
             insn: 0,
             div_op: 0,
             rs1_sign: 0,
-            rs2_sign: 0
+            rs2_sign: 0,
+            rs1_data: 0
         };
       end
       div_i_dividend <= 0;
@@ -624,21 +568,34 @@ module DatapathPipelined (
       end
 
       // Check for new division operation
-      if (e_opcode == OpcodeRegReg && e_funct7 == 7'b0000001 && e_insn != 0) begin
+      if (e_is_div) begin
         div_tracker[0].valid <= 1;
         div_tracker[0].rd_addr <= e_rd_addr;
         div_tracker[0].write_rd <= e_write_rd;
         div_tracker[0].pc <= e_pc;
         div_tracker[0].insn <= e_insn;
+        div_tracker[0].rs1_data <= e_rs1_data;  // Store original dividend value
 
-        // Set operation type
-        case (e_funct3)
-          3'b100:  div_tracker[0].div_op <= 4'b0001;  // DIV
-          3'b101:  div_tracker[0].div_op <= 4'b0010;  // DIVU
-          3'b110:  div_tracker[0].div_op <= 4'b0100;  // REM
-          3'b111:  div_tracker[0].div_op <= 4'b1000;  // REMU
-          default: div_tracker[0].div_op <= 4'b0000;
-        endcase
+        // Check for division by zero
+        if (e_rs2_data == 0) begin
+          // Handle division by zero according to RISC-V spec
+          case (e_funct3)
+            3'b100:  div_tracker[0].div_op <= 4'b1111;  // DIV - special flag for div by zero
+            3'b101:  div_tracker[0].div_op <= 4'b1110;  // DIVU - special flag for div by zero
+            3'b110:  div_tracker[0].div_op <= 4'b1101;  // REM - special flag for rem by zero
+            3'b111:  div_tracker[0].div_op <= 4'b1100;  // REMU - special flag for rem by zero
+            default: div_tracker[0].div_op <= 4'b0000;
+          endcase
+        end else begin
+          // Normal operation codes
+          case (e_funct3)
+            3'b100:  div_tracker[0].div_op <= 4'b0001;  // DIV
+            3'b101:  div_tracker[0].div_op <= 4'b0010;  // DIVU
+            3'b110:  div_tracker[0].div_op <= 4'b0100;  // REM
+            3'b111:  div_tracker[0].div_op <= 4'b1000;  // REMU
+            default: div_tracker[0].div_op <= 4'b0000;
+          endcase
+        end
 
         // Store signs for signed operations
         if (e_funct3 == 3'b100 || e_funct3 == 3'b110) begin
@@ -669,6 +626,7 @@ module DatapathPipelined (
         div_tracker[0].div_op <= 0;
         div_tracker[0].rs1_sign <= 0;
         div_tracker[0].rs2_sign <= 0;
+        div_tracker[0].rs1_data <= 0;
       end
     end
   end
@@ -686,14 +644,14 @@ module DatapathPipelined (
       if (div_tracker[i].valid) begin
         if (!d_is_div) begin
           // Case 1: Non-division instruction after division
-          // $display("i am here 0");
+          $display("i am here 0");
 
           div_data_hazard = 1;
           break;
         end else if ((d_rs1 != 0 && d_rs1 == div_tracker[i].rd_addr) || 
                          (d_rs2 != 0 && d_rs2 == div_tracker[i].rd_addr)) begin
           // Case 2: Division instruction that depends on previous division
-          // $display("i am here 1");
+          $display("i am here 1");
 
           div_data_hazard = 1;
           break;
@@ -709,12 +667,12 @@ module DatapathPipelined (
 
       if (!d_is_div) begin
         // Non-division after division
-        // $display("i am here 2");
+        $display("i am here 2");
 
         div_data_hazard = 1;
       end else if ((d_rs1 != 0 && d_rs1 == e_rd_addr) || (d_rs2 != 0 && d_rs2 == e_rd_addr)) begin
         // Dependent division
-        // $display("i am here 3");
+        $display("i am here 3");
         div_data_hazard = 1;
       end
     end
@@ -755,6 +713,9 @@ module DatapathPipelined (
     end
   end
 
+  logic e_is_div;
+  logic e_is_mul;
+
   // Connect execute stage signals
   always_comb begin
     e_rs1_addr = execute_state.rs1_addr;
@@ -776,6 +737,16 @@ module DatapathPipelined (
     e_imm_u = {e_insn[31:12], 12'b0};
     e_imm_s = {{20{e_insn[31]}}, e_insn[31:25], e_insn[11:7]};  // Add this line
     e_imm_j = {{11{e_insn[31]}}, e_insn[31], e_insn[19:12], e_insn[20], e_insn[30:21], 1'b0};
+
+    // Detect division instructions in execute stage
+    e_is_div = (e_opcode == OpcodeRegReg && e_funct7 == 7'b0000001 && 
+             (e_funct3 == 3'b100 || e_funct3 == 3'b101 || 
+              e_funct3 == 3'b110 || e_funct3 == 3'b111));
+
+    // Detect multiply instructions in execute stage
+    e_is_mul = (e_opcode == OpcodeRegReg && e_funct7 == 7'b0000001 && 
+             (e_funct3 == 3'b000 || e_funct3 == 3'b001 || 
+              e_funct3 == 3'b010 || e_funct3 == 3'b011));
   end
 
   // Bypass control logic
@@ -792,14 +763,6 @@ module DatapathPipelined (
     // WX bypass: Writeback to Execute
     use_w_x1_bypass = (e_rs1_addr != 0) && (e_rs1_addr == w_rd_addr) && w_write_rd;
     use_w_x2_bypass = (e_rs2_addr != 0) && (e_rs2_addr == w_rd_addr) && w_write_rd;
-
-    // Debug print - uncomment to see bypass activity
-    // if (use_m_x1_bypass || use_m_x2_bypass || use_w_x1_bypass || use_w_x2_bypass) begin
-    //   $display("Bypass at cycle %d: M->X1=%d M->X2=%d W->X1=%d W->X2=%d", 
-    //            cycles_current, use_m_x1_bypass, use_m_x2_bypass, use_w_x1_bypass, use_w_x2_bypass);
-    //   $display("  e_rs1_addr=%d e_rs2_addr=%d m_rd_addr=%d w_rd_addr=%d", 
-    //            e_rs1_addr, e_rs2_addr, m_rd_addr, w_rd_addr);
-    // end
   end
 
   // Apply bypass logic to get actual operand values
@@ -828,35 +791,10 @@ module DatapathPipelined (
     endcase
   end
 
-  logic [63:0] product;  // For multiplication operations
-
   // ALU operation
   always_comb begin
-
-    logic [63:0] mul_result_64;  // For MUL (lower 32 bits needed)
-    logic signed [63:0] mulh_result_64;  // For MULH
-    logic signed [63:0] mulhsu_s1_64;  // For MULHSU operand 1
-    logic [63:0] mulhsu_u2_64;  // For MULHSU operand 2
-    logic signed [63:0] mulhsu_result_64;  // For MULHSU result
-    logic [63:0] mulhu_result_64;  // For MULHU
-    // logic [63:0] product;  // For MULHU
-
-    product = 64'd0;  // Initialize with default value
-
-
-    mul_result_64 = 64'd0;
-    mulh_result_64 = 64'sd0;  // Signed default
-    mulhsu_s1_64 = 64'sd0;
-    mulhsu_u2_64 = 64'd0;
-    mulhsu_result_64 = 64'sd0;
-    mulhu_result_64 = 64'd0;
-
-    // Existing defaults
-    e_branch_taken = 0;
-    e_branch_target = e_pc + 4;
-    e_alu_result = 32'd0;  // Default ALU result
-
-
+    e_branch_taken  = 0;
+    e_branch_target = e_pc + 4;  // Default next PC
 
     case (e_opcode)
       OpcodeLui: begin
@@ -883,40 +821,50 @@ module DatapathPipelined (
       end
 
       OpcodeRegReg: begin
-        if (e_funct7 == 7'b0000001) begin
-          case (e_funct3)
-            3'b000: begin
-              // For MUL instruction
-              e_alu_result = e_rs1_data * e_rs2_data;
-              // Debug purpose
-              // $display("MUL: %h * %h = %h at cycle %d", e_rs1_data, e_rs2_data, e_alu_result, cycles_current);
+        // R-type ALU operations
+        case (e_funct3)
+          3'b000: begin
+            if (e_funct7 == 7'b0000001) begin
+              // MUL - lower 32 bits of signed x signed product
+              e_alu_result = $signed(e_rs1_data) * $signed(e_rs2_data);
+            end else begin
+              e_alu_result = e_cla_sum;  // ADD/SUB
             end
-            3'b001: e_alu_result = mul_signed_prod[63:32];  // MULH
-            3'b010: e_alu_result = mulhsu_prod[63:32];  // MULHSU
-            3'b011: e_alu_result = mulhu_prod[63:32];  // MULHU
-
-            3'b100, 3'b101, 3'b110, 3'b111: e_alu_result = 32'd0;
-            default: e_alu_result = 32'd0;
-          endcase
-        end else begin
-          // Base ISA R-type (ADD/SUB/SLT/Logic/Shift - funct7 = 0 or 0x20)
-          case (e_funct3)
-            3'b000:  e_alu_result = e_cla_sum;  // ADD/SUB
-            3'b001:  e_alu_result = e_rs1_data << e_rs2_data[4:0];  // SLL
-            3'b010:  e_alu_result = {31'b0, $signed(e_rs1_data) < $signed(e_rs2_data)};  // SLT
-            3'b011:  e_alu_result = {31'b0, e_rs1_data < e_rs2_data};  // SLTU
-            3'b100:  e_alu_result = e_rs1_data ^ e_rs2_data;  // XOR
-            3'b101: begin  // SRL/SRA
-              if (e_funct7[5]) e_alu_result = $signed(e_rs1_data) >>> e_rs2_data[4:0];  // SRA
-              else e_alu_result = e_rs1_data >> e_rs2_data[4:0];  // SRL
+          end
+          3'b001: begin
+            if (e_funct7 == 7'b0000001) begin
+              // MULH - upper 32 bits of signed x signed product
+              e_alu_result = 32'(((64'($signed(e_rs1_data)) * 64'($signed(e_rs2_data))) >> 32));
+            end else begin
+              e_alu_result = e_rs1_data << e_rs2_data[4:0];  // SLL
             end
-            3'b110:  e_alu_result = e_rs1_data | e_rs2_data;  // OR
-            3'b111:  e_alu_result = e_rs1_data & e_rs2_data;  // AND
-            default: e_alu_result = 32'd0;
-          endcase
-        end
+          end
+          3'b010: begin
+            if (e_funct7 == 7'b0000001) begin
+              // MULHSU - upper 32 bits of signed x unsigned product
+              e_alu_result = 32'(((64'($signed(e_rs1_data)) * 64'($unsigned(e_rs2_data))) >> 32));
+            end else begin
+              e_alu_result = {31'b0, $signed(e_rs1_data) < $signed(e_rs2_data)};  // SLT
+            end
+          end
+          3'b011: begin
+            if (e_funct7 == 7'b0000001) begin
+              // MULHU - upper 32 bits of unsigned x unsigned product
+              e_alu_result = 32'(((64'($unsigned(e_rs1_data)) * 64'($unsigned(e_rs2_data))) >> 32));
+            end else begin
+              e_alu_result = {31'b0, e_rs1_data < e_rs2_data};  // SLTU
+            end
+          end
+          3'b100:  e_alu_result = e_rs1_data ^ e_rs2_data;  // XOR
+          3'b101: begin
+            if (e_funct7[5]) e_alu_result = $signed(e_rs1_data) >>> e_rs2_data[4:0];  // SRA
+            else e_alu_result = e_rs1_data >> e_rs2_data[4:0];  // SRL
+          end
+          3'b110:  e_alu_result = e_rs1_data | e_rs2_data;  // OR
+          3'b111:  e_alu_result = e_rs1_data & e_rs2_data;  // AND
+          default: e_alu_result = 0;
+        endcase
       end
-
 
       // PLACEHOLDER for Load instructions (Milestone 2)
       OpcodeLoad: begin
@@ -987,6 +935,7 @@ module DatapathPipelined (
   end
 
   // Detect load-use hazard (load in Execute, dependent instruction in Decode)
+  logic load_use_hazard;
   logic insn_uses_rs1;
   logic insn_uses_rs2;
   logic decode_uses_execute_rd;
@@ -1087,30 +1036,37 @@ module DatapathPipelined (
           cycle_status: CYCLE_RESET
       };
     end else begin
-      // Special handling for multiplication instructions
-      if (is_mul_instruction && e_insn != 0) begin
-        // Explicitly handle the MUL result - ensure it gets passed correctly
-        memory_state <= '{
-            pc: e_pc,
-            insn: e_insn,
-            alu_result: mul_result,  // Explicitly use mul_result for MUL instructions
-            rs2_data: e_rs2_data,
-            rd_addr: e_rd_addr,
-            write_rd: e_write_rd,
-            cycle_status: e_cycle_status
-        };
-      end else begin
-        // Normal instruction handling (non-MUL)
-        memory_state <= '{
-            pc: e_pc,
-            insn: e_insn,
-            alu_result: e_alu_result,
-            rs2_data: e_rs2_data,
-            rd_addr: e_rd_addr,
-            write_rd: e_write_rd,
-            cycle_status: e_branch_taken ? CYCLE_TAKEN_BRANCH : e_cycle_status
-        };
-      end
+      // if (div_tracker[7].valid) begin
+      //     // Division complete, process result
+      //     logic [`REG_SIZE] div_result;
+      //     case (div_tracker[7].div_op)
+      //         4'b0001: div_result = (div_tracker[7].rs1_sign != div_tracker[7].rs2_sign) ? ~div_o_quotient + 1 : div_o_quotient;  // DIV
+      //         4'b0010: div_result = div_o_quotient;  // DIVU
+      //         4'b0100: div_result = div_tracker[7].rs1_sign ? ~div_o_remainder + 1 : div_o_remainder;  // REM
+      //         4'b1000: div_result = div_o_remainder;  // REMU
+      //         default: div_result = div_o_quotient;
+      //     endcase
+
+      //     memory_state <= '{
+      //         pc: div_tracker[7].pc,
+      //         insn: div_tracker[7].insn,
+      //         alu_result: div_result,
+      //         rs2_data: 0,
+      //         rd_addr: div_tracker[7].rd_addr,
+      //         write_rd: div_tracker[7].write_rd,
+      //         cycle_status: CYCLE_NO_STALL
+      //     };
+      // end else begin
+      memory_state <= '{
+          pc: e_pc,
+          insn: e_insn,
+          alu_result: e_alu_result,
+          rs2_data: e_rs2_data,
+          rd_addr: e_rd_addr,
+          write_rd: e_write_rd,
+          cycle_status: e_branch_taken ? CYCLE_TAKEN_BRANCH : e_cycle_status
+      };
+      // end
     end
   end
 
@@ -1140,21 +1096,13 @@ module DatapathPipelined (
     m_cycle_status = memory_state.cycle_status;
     m_opcode = m_insn[6:0];
 
-    // Detect FENCE in Memory
-    m_is_fence = (m_opcode == OpcodeMiscMem && m_insn[14:12] == 3'b000 && m_insn != 0);
-
-    // Data for MX bypass - This is critical for multiplication
+    // Data for MX bypass
     m_bypass_data = m_alu_result;
 
     // WM Bypass: Detect if we need to forward data from Writeback to Memory
     // This matters for store instructions where rs2 contains the data to store
     use_w_m_bypass = (m_opcode == OpcodeStore) && (memory_state.insn[24:20] != 0) &&  // rs2 != x0
     (memory_state.insn[24:20] == w_rd_addr) && w_write_rd;
-
-    // Debug bypass data
-    // if (m_rd_addr == 5'd14 && m_write_rd) begin
-    //   $display("Memory stage has x14 write: value=%h at cycle %d", m_alu_result, cycles_current);
-    // end
   end
 
   // Passing ALU result through to Writeback stage
@@ -1187,11 +1135,16 @@ module DatapathPipelined (
         // Division result is ready
         case (div_tracker[7].div_op)
           4'b0001:
-          result_value = (div_tracker[7].rs1_sign != div_tracker[7].rs2_sign) ? ~div_o_quotient + 1 : div_o_quotient;  // DIV
+          result_value = (div_tracker[7].rs1_sign != div_tracker[7].rs2_sign) ? 
+                         ~div_o_quotient + 1 : div_o_quotient;  // DIV
           4'b0010: result_value = div_o_quotient;  // DIVU
           4'b0100:
           result_value = div_tracker[7].rs1_sign ? ~div_o_remainder + 1 : div_o_remainder;  // REM
           4'b1000: result_value = div_o_remainder;  // REMU
+          4'b1111: result_value = 32'hFFFFFFFF;  // DIV by zero
+          4'b1110: result_value = 32'hFFFFFFFF;  // DIVU by zero
+          4'b1101: result_value = div_tracker[7].rs1_data;  // REM by zero
+          4'b1100: result_value = div_tracker[7].rs1_data;  // REMU by zero
           default: result_value = div_o_quotient;
         endcase
 
@@ -1389,20 +1342,6 @@ module DatapathPipelined (
     end
   end
   //////////////////////////////////////////////
-
-  //--------------------------------------------------------------------------
-  // HAZARD CONTROL LOGIC
-  //--------------------------------------------------------------------------
-  always_comb begin
-    // Detect stores in Execute and Memory stages
-    logic e_has_store = (e_opcode == OpcodeStore && e_insn != 0);
-    logic m_has_store = (m_opcode == OpcodeStore && m_insn != 0);
-
-    // Stall only when FENCE is in Decode and there are pending stores
-    fence_stall_condition = d_is_fence && (e_has_store || m_has_store);
-    // load_use_hazard computed elsewhere (Execute Stage)
-    // div_data_hazard computed elsewhere (Execute Stage)
-  end
 
 endmodule
 
