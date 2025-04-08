@@ -247,68 +247,17 @@ module DatapathPipelined (
       .disasm(f_disasm)
   );
 
-  // // Here's how to disassemble an insn into a string you can view in GtkWave.
-  // // Use PREFIX to provide a 1-character tag to identify which stage the insn comes from.
-  // wire [255:0] f_disasm;
-  // Disasm #(
-  //     .PREFIX("F")
-  // ) disasm_0fetch (
-  //     .insn  (f_insn),
-  //     .disasm(f_disasm)
-  // );
-
   /****************/
   /* DECODE STAGE */
   /****************/
 
-  // // this shows how to package up state in a `struct packed`, and how to pass it between stages
-  // stage_decode_t decode_state;
-  // always_ff @(posedge clk) begin
-  //   if (rst) begin
-  //     decode_state <= '{pc: 0, insn: 0, cycle_status: CYCLE_RESET};
-  //   end else begin
-  //     begin
-  //       decode_state <= '{pc: f_pc_current, insn: f_insn, cycle_status: f_cycle_status};
-  //     end
-  //   end
-  // end
-  // wire [255:0] d_disasm;
-  // Disasm #(
-  //     .PREFIX("D")
-  // ) disasm_1decode (
-  //     .insn  (decode_state.insn),
-  //     .disasm(d_disasm)
-  // );
-
-  // TODO: your code here, though you will also need to modify some of the code above
-  // TODO: the testbench requires that your register file instance is named `rf`
-
-  // // Register containing state passed from Fetch to Decode
-  // stage_decode_t decode_state;
-  // always_ff @(posedge clk) begin
-  //   if (rst) begin
-  //     decode_state <= '{pc: 0, insn: 0, cycle_status: CYCLE_RESET};
-  //   end else if (e_branch_taken) begin
-  //     // Insert bubble if branch taken (pipeline flush)
-  //     decode_state <= '{pc: 0, insn: 0, cycle_status: CYCLE_TAKEN_BRANCH};
-  //   end else if (load_use_hazard || div_data_hazard) begin
-  //     // Keep current decode state during stall (do not update)
-  //     decode_state <= decode_state;
-  //   end else begin
-  //     decode_state <= '{pc: f_pc_current, insn: f_insn, cycle_status: f_cycle_status};
-  //   end
-  // end
-
   stage_decode_t decode_state;
 
-  // Register containing state passed from Fetch to Decode
   always_ff @(posedge clk) begin
     if (rst) begin
       decode_state <= '{pc: 0, insn: 0, cycle_status: CYCLE_RESET};
-      // Flush ONLY if branch is taken AND pipeline is not stalled for other reasons
     end else if (e_branch_taken && !(load_use_hazard || div_data_hazard || fence_stall_condition)) begin
       decode_state <= '{pc: 0, insn: 0, cycle_status: CYCLE_TAKEN_BRANCH};
-      // Stall if load/use, div hazard, OR FENCE condition is active
     end else if (load_use_hazard || div_data_hazard || fence_stall_condition) begin
       decode_state <= decode_state;  // Keep current state (STALL)
     end else begin  // Normal operation
@@ -660,13 +609,8 @@ module DatapathPipelined (
   end
 
 
-  // Enhance division hazard detection
-  // Enhance division hazard detection - stall all instructions after a division
-  // Enhance division hazard detection
   always_comb begin
     div_data_hazard = 0;
-
-
     // Check for any valid division operations in progress
     for (int i = 0; i < 6; i++) begin
       if (div_tracker[i].valid) begin
@@ -684,7 +628,6 @@ module DatapathPipelined (
           div_data_hazard = 1;
           break;
         end
-        // Case 3: Independent back-to-back division - no stall needed
       end
     end
 
@@ -935,13 +878,6 @@ module DatapathPipelined (
 
       default: e_alu_result = 0;
     endcase
-    // end
-
-    // Branch handling
-    // always_comb begin
-    //   e_branch_taken  = 0;
-    //   e_branch_target = e_pc + 4;  // Default next PC
-
     if (e_opcode == OpcodeBranch) begin
       // Branch instruction
       e_branch_target = e_pc + e_imm_b;  // Branch target
@@ -1032,11 +968,15 @@ module DatapathPipelined (
     //                                 d_opcode != OpcodeRegImm && d_opcode != OpcodeLui && 
     //                                 d_opcode != OpcodeJal && d_opcode != OpcodeAuipc));
 
+
     decode_uses_execute_rd = (execute_has_load && e_write_rd && e_rd_addr != 0) && 
                                 ((d_rs1 == e_rd_addr && d_rs1 != 0 && insn_uses_rs1) || 
-                                 (d_rs2 == e_rd_addr && d_rs2 != 0 && insn_uses_rs2));
+                                 (d_rs2 == e_rd_addr && d_rs2 != 0 && insn_uses_rs2) && d_opcode != OpcodeStore);
 
     // Load-use hazard detected
+
+    // logic execute_has_load = (e_opcode == OpcodeLoad);
+
     load_use_hazard = execute_has_load && decode_uses_execute_rd;
   end
 
@@ -1064,27 +1004,6 @@ module DatapathPipelined (
           cycle_status: CYCLE_RESET
       };
     end else begin
-      // if (div_tracker[7].valid) begin
-      //     // Division complete, process result
-      //     logic [`REG_SIZE] div_result;
-      //     case (div_tracker[7].div_op)
-      //         4'b0001: div_result = (div_tracker[7].rs1_sign != div_tracker[7].rs2_sign) ? ~div_o_quotient + 1 : div_o_quotient;  // DIV
-      //         4'b0010: div_result = div_o_quotient;  // DIVU
-      //         4'b0100: div_result = div_tracker[7].rs1_sign ? ~div_o_remainder + 1 : div_o_remainder;  // REM
-      //         4'b1000: div_result = div_o_remainder;  // REMU
-      //         default: div_result = div_o_quotient;
-      //     endcase
-
-      //     memory_state <= '{
-      //         pc: div_tracker[7].pc,
-      //         insn: div_tracker[7].insn,
-      //         alu_result: div_result,
-      //         rs2_data: 0,
-      //         rd_addr: div_tracker[7].rd_addr,
-      //         write_rd: div_tracker[7].write_rd,
-      //         cycle_status: CYCLE_NO_STALL
-      //     };
-      // end else begin
       memory_state <= '{
           pc: e_pc,
           insn: e_insn,
@@ -1110,9 +1029,6 @@ module DatapathPipelined (
   cycle_status_e m_cycle_status;
   logic use_w_m_bypass;
   logic [`OPCODE_SIZE] m_opcode;
-
-  // detecting fence
-  // m_is_fence = (m_opcode == OpcodeMiscMem && m_insn[14:12] == 3'b000 && m_insn != 0);
 
   // Connect memory stage signals
   always_comb begin
@@ -1375,9 +1291,7 @@ module DatapathPipelined (
   end
   //////////////////////////////////////////////
 
-  //--------------------------------------------------------------------------
-  // HAZARD CONTROL LOGIC
-  //--------------------------------------------------------------------------
+
   always_comb begin
     // Detect stores in Execute and Memory stages
     logic e_has_store = (e_opcode == OpcodeStore && e_insn != 0);
@@ -1385,8 +1299,7 @@ module DatapathPipelined (
 
     // Stall only when FENCE is in Decode and there are pending stores
     fence_stall_condition = d_is_fence && (e_has_store || m_has_store);
-    // load_use_hazard computed elsewhere (Execute Stage)
-    // div_data_hazard computed elsewhere (Execute Stage)
+
   end
 endmodule
 
