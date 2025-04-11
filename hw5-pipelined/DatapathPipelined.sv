@@ -1004,16 +1004,39 @@ module DatapathPipelined (
           cycle_status: CYCLE_RESET
       };
     end else begin
-      memory_state <= '{
-          pc: e_pc,
-          insn: e_insn,
-          alu_result: e_alu_result,
-          rs2_data: e_rs2_data,
-          rd_addr: e_rd_addr,
-          write_rd: e_write_rd,
-          cycle_status: e_branch_taken ? CYCLE_TAKEN_BRANCH : e_cycle_status
-      };
-      // end
+      // If a division operation is in progress, we should output a bubble
+      logic div_in_progress = 0;
+      for (int i = 0; i < 7; i++) begin
+        if (i < 6 && div_tracker[i].valid) begin
+          div_in_progress = 1;
+          break;
+        end
+      end
+      /////////////////
+
+      if (div_in_progress || e_is_div) begin
+        // Pass bubbles during division operations
+        memory_state <= '{
+            pc: 0,
+            insn: 0,
+            alu_result: 0,
+            rs2_data: 0,
+            rd_addr: 0,
+            write_rd: 0,
+            cycle_status: CYCLE_DIV
+        };
+      end else begin
+        memory_state <= '{
+            pc: e_pc,
+            insn: e_insn,
+            alu_result: e_alu_result,
+            rs2_data: e_rs2_data,
+            rd_addr: e_rd_addr,
+            write_rd: e_write_rd,
+            cycle_status: e_branch_taken ? CYCLE_TAKEN_BRANCH : e_cycle_status
+        };
+        // end
+      end
     end
   end
 
