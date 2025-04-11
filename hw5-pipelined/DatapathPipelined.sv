@@ -1079,7 +1079,29 @@ module DatapathPipelined (
     end else begin
       // Determine result based on instruction type
       logic [`REG_SIZE] result_value;
-      if (div_tracker[7].valid) begin
+      logic div_in_progress;
+
+      // Check if there's a division in progress but not yet completed
+      div_in_progress = 0;
+      for (int i = 0; i < 7; i++) begin
+        if (div_tracker[i].valid) begin
+          div_in_progress = 1;
+          break;
+        end
+      end
+
+      if (div_in_progress) begin
+        // Insert bubble during division calculation
+        writeback_state <= '{
+            pc: 0,
+            insn: 0,
+            result: 0,
+            rd_addr: 0,
+            write_rd: 0,
+            cycle_status: CYCLE_DIV
+        };
+
+      end else if (div_tracker[7].valid) begin
         // Division result is ready
         case (div_tracker[7].div_op)
           4'b0001:
