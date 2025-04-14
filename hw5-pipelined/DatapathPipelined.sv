@@ -147,6 +147,12 @@ module DatapathPipelined (
   logic e_branch_taken;
   logic [`REG_SIZE] e_branch_target;
 
+  // for FENCE handelling
+  logic fence_stall_condition;  // Master stall signal for FENCE
+  logic d_is_fence;  // Is FENCE instruction in Decode?
+  logic e_is_fence;  // Is FENCE instruction in Execute?
+  logic m_is_fence;  // Is FENCE instruction in Memory?
+
   // Structures for pipeline stages
   typedef struct packed {
     logic [`REG_SIZE] pc;
@@ -202,7 +208,7 @@ module DatapathPipelined (
 
   // Calculate next PC value
   always_comb begin
-    if (load_use_hazard || div_data_hazard  )
+    if (load_use_hazard || div_data_hazard || fence_stall_condition)
       // Stall: keep PC the same during load-use hazard
       f_pc_next = f_pc_current;
     else if (e_branch_taken)
@@ -282,10 +288,9 @@ module DatapathPipelined (
   always_ff @(posedge clk) begin
     if (rst) begin
       decode_state <= '{pc: 0, insn: 0, cycle_status: CYCLE_RESET};
-    end else if (e_branch_taken) begin
-      // Insert bubble if branch taken (pipeline flush)
+    end else if (e_branch_taken && !(load_use_hazard || div_data_hazard || fence_stall_condition)) begin
       decode_state <= '{pc: 0, insn: 0, cycle_status: CYCLE_TAKEN_BRANCH};
-    end else if (load_use_hazard || div_data_hazard  ) begin
+    end else if (load_use_hazard || div_data_hazard || fence_stall_condition) begin
       // Keep current decode state during stall (do not update)
       decode_state <= decode_state;
     end else begin
@@ -330,6 +335,8 @@ logic d_is_mul;
     d_is_div = (d_opcode == OpcodeRegReg && d_funct7 == 7'b0000001 && 
              (d_funct3 == 3'b100 || d_funct3 == 3'b101 || 
               d_funct3 == 3'b110 || d_funct3 == 3'b111));
+
+    d_is_fence = (d_opcode == OpcodeMiscMem && d_funct3 == 3'b000 && decode_state.insn != 0);
 
               // Detect multiply instructions (MUL, MULH, MULHSU, MULHU)
   d_is_mul = (d_opcode == OpcodeRegReg && d_funct7 == 7'b0000001 && 
@@ -471,6 +478,9 @@ logic d_is_mul;
 
   // CLA adder input logic
   always_comb begin
+    // detect if FENCE
+    e_is_fence = (e_opcode == OpcodeMiscMem && e_funct3 == 3'b000 && e_insn != 0);
+
     case (e_opcode)
       OpcodeRegImm: begin
         // For I-type instructions
@@ -993,7 +1003,7 @@ always_comb begin
   
   decode_uses_execute_rd = (execute_has_load && e_write_rd && e_rd_addr != 0) && 
                                 ((d_rs1 == e_rd_addr && d_rs1 != 0 && insn_uses_rs1) || 
-                                 (d_rs2 == e_rd_addr && d_rs2 != 0 && insn_uses_rs2));
+                                 (d_rs2 == e_rd_addr && d_rs2 != 0 && insn_uses_rs2) && d_opcode != OpcodeStore);
   
   // Load-use hazard detected
   load_use_hazard = execute_has_load && decode_uses_execute_rd;
@@ -1015,36 +1025,15 @@ always_ff @(posedge clk) begin
     if (rst) begin
         memory_state <= '{pc: 0, insn: 0, alu_result: 0, rs2_data: 0, rd_addr: 0, write_rd: 0, cycle_status: CYCLE_RESET};
     end else begin
-        // if (div_tracker[7].valid) begin
-        //     // Division complete, process result
-        //     logic [`REG_SIZE] div_result;
-        //     case (div_tracker[7].div_op)
-        //         4'b0001: div_result = (div_tracker[7].rs1_sign != div_tracker[7].rs2_sign) ? ~div_o_quotient + 1 : div_o_quotient;  // DIV
-        //         4'b0010: div_result = div_o_quotient;  // DIVU
-        //         4'b0100: div_result = div_tracker[7].rs1_sign ? ~div_o_remainder + 1 : div_o_remainder;  // REM
-        //         4'b1000: div_result = div_o_remainder;  // REMU
-        //         default: div_result = div_o_quotient;
-        //     endcase
-            
-        //     memory_state <= '{
-        //         pc: div_tracker[7].pc,
-        //         insn: div_tracker[7].insn,
-        //         alu_result: div_result,
-        //         rs2_data: 0,
-        //         rd_addr: div_tracker[7].rd_addr,
-        //         write_rd: div_tracker[7].write_rd,
-        //         cycle_status: CYCLE_NO_STALL
-        //     };
-        // end else begin
-            memory_state <= '{
-                pc: e_pc,
-                insn: e_insn,
-                alu_result: e_alu_result,
-                rs2_data: e_rs2_data,
-                rd_addr: e_rd_addr,
-                write_rd: e_write_rd,
-                cycle_status: e_branch_taken ? CYCLE_TAKEN_BRANCH : e_cycle_status
-            };
+        memory_state <= '{
+            pc: e_pc,
+            insn: e_insn,
+            alu_result: e_alu_result,
+            rs2_data: e_rs2_data,
+            rd_addr: e_rd_addr,
+            write_rd: e_write_rd,
+            cycle_status: e_branch_taken ? CYCLE_TAKEN_BRANCH : e_cycle_status
+        };
         // end
     end
 end
@@ -1074,6 +1063,8 @@ end
     m_write_rd = memory_state.write_rd;
     m_cycle_status = memory_state.cycle_status;
     m_opcode = m_insn[6:0];
+
+    m_is_fence = (m_opcode == OpcodeMiscMem && m_insn[14:12] == 3'b000 && m_insn != 0);
 
     // Data for MX bypass
     m_bypass_data = m_alu_result;
@@ -1112,7 +1103,18 @@ end
     end else begin
       // Determine result based on instruction type
         logic [`REG_SIZE] result_value;
-        if (div_tracker[7].valid) begin
+        logic div_in_progress;
+
+      // Check if there's a division in progress but not yet completed
+      div_in_progress = 0;
+      for (int i = 0; i < 7; i++) begin
+        if (div_tracker[i].valid) begin
+          div_in_progress = 1;
+          break;
+        end
+      end
+
+      if (div_tracker[7].valid) begin
             // Division result is ready
             case (div_tracker[7].div_op)
     4'b0001: result_value = (div_tracker[7].rs1_sign != div_tracker[7].rs2_sign) ? 
@@ -1136,6 +1138,16 @@ endcase
                 write_rd: div_tracker[7].write_rd,
                 cycle_status: CYCLE_NO_STALL
             };
+            end else if (div_in_progress) begin
+        // Insert bubble during division calculation
+        writeback_state <= '{
+            pc: 0,
+            insn: 0,
+            result: 0,
+            rd_addr: 0,
+            write_rd: 0,
+            cycle_status: CYCLE_DIV
+        };
         end else begin
             // Normal operation
             // In the writeback stage, where load data is processed:
@@ -1230,7 +1242,12 @@ end
   assign trace_writeback_cycle_status = w_cycle_status;
 
   // Detect halt condition when ECALL is encountered
-  assign halt = (w_insn[6:0] == OpcodeEnviron) && (w_pc != 0);
+  // assign halt = (w_insn[6:0] == OpcodeEnviron) && (w_pc != 0);
+  // Use explicit equality comparison for opcode
+  wire is_environ_opcode = (w_insn[6:0] == 7'b1110011);
+  wire pc_not_zero = |w_pc;  // OR reduction is faster than comparison
+  assign halt = is_environ_opcode & pc_not_zero;
+
 
   // Memory stage connections to data memory /////////
   always_comb begin
@@ -1304,6 +1321,15 @@ end
   end
   //////////////////////////////////////////////
 
+  always_comb begin
+    // Detect stores in Execute and Memory stages
+    logic e_has_store = (e_opcode == OpcodeStore && e_insn != 0);
+    logic m_has_store = (m_opcode == OpcodeStore && m_insn != 0);
+
+    // Stall only when FENCE is in Decode and there are pending stores
+    fence_stall_condition = d_is_fence && (e_has_store || m_has_store);
+
+  end
 endmodule
 
 module MemorySingleCycle #(
