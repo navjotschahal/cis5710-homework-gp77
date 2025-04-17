@@ -219,6 +219,13 @@ module AxilCache #(
   logic need_writeback;
   logic [31:0] writeback_addr;
 
+  // For read hit timing control
+  logic read_hit_detected;  // detect a hit in the current cycle
+  logic read_hit_waiting;  // indicates we're waiting to respond to a hit
+  logic [IndexBits-1:0] read_hit_index;  // store the index for delayed response
+
+  // logic [31:0] next_rdata;  // intermediate signal for RDATA assignment
+
   // initialize cache state to all zeroes
   genvar seti;
   for (seti = 0; seti < NUM_SETS; seti = seti + 1) begin : gen_cache_init
@@ -273,6 +280,30 @@ module AxilCache #(
     need_writeback = valid[index] && dirty[index] && (tag[index] != addr_tag);
   end
 
+  // Handle RDATA combinational assignment
+  // always_comb begin
+  //   // For miss responses: direct connection between memory and processor
+  //   if (current_state == CACHE_AWAIT_FILL_RESPONSE && mem.RVALID) begin
+  //     proc.RDATA = mem.RDATA;  // Combinational assignment for miss responses
+  //   end else if (read_hit_waiting) begin
+  //     proc.RDATA = data[read_hit_index];  // Delayed response for hits
+  //   end else begin
+  //     proc.RDATA = '0;
+  //   end
+  // end
+
+  // Handle RDATA combinational assignment
+  // always_comb begin
+  //   // For miss responses: direct connection between memory and processor
+  //   if (current_state == CACHE_AWAIT_FILL_RESPONSE && mem.RVALID) begin
+  //     next_rdata = mem.RDATA;  // Combinational assignment for miss responses
+  //   end else if (read_hit_waiting) begin
+  //     next_rdata = data[read_hit_index];  // Delayed response for hits
+  //   end else begin
+  //     next_rdata = '0;
+  //   end
+  // end
+
   // always_ff @(posedge ACLK) begin
   //   if (!ARESETn) begin  // NB: reset when ARESETn == 0
   //     current_state <= CACHE_AVAILABLE;
@@ -295,6 +326,7 @@ module AxilCache #(
       proc.ARREADY <= 1;
       proc.RVALID <= 0;
       proc.RDATA <= 0;
+      // proc.RDATA <= next_rdata;
       proc.AWREADY <= 1;
       proc.WREADY <= 1;
       proc.BVALID <= 0;
@@ -311,24 +343,44 @@ module AxilCache #(
       mem.WDATA <= 0;
       mem.WSTRB <= 0;
       mem.BREADY <= 0;
+
+      read_hit_detected <= 0;
+      read_hit_waiting <= 0;
+      read_hit_index <= 0;
+
+      // next_rdata <= 0;
+
+      // For RDATA generation 
+      // logic [31:0] next_rdata;  // intermediate signal for RDATA assignment
+
     end else begin
       case (current_state)
         CACHE_AVAILABLE: begin
-          // Handle read hits
+
+          // Handle read hits with proper timing
           if (proc.ARVALID && proc.ARREADY) begin
             if (valid[index] && (tag[index] == addr_tag)) begin
-              // Cache hit - return data
+              // // Detect a hit but delay the response by one cycle
+              // read_hit_detected <= 1;
+              // read_hit_index <= index;
+              // proc.ARREADY <= proc.RREADY;  // Can accept another request if ready
+
+              // if (!proc.RREADY) begin
+              //   // Buffer the read request if manager not ready
+              //   buffered_read_valid <= 1;
+              //   buffered_read_addr <= proc.ARADDR;
+              //   current_state <= CACHE_AWAIT_MANAGER_READY;
+              // end
+
+              // For cache hit, immediately set RVALID and RDATA
               proc.RVALID  <= 1;
               proc.RDATA   <= data[index];
 
-              // Can accept another request if consumer is ready
+              // Can accept another request if manager ready for response
               proc.ARREADY <= proc.RREADY;
 
-              // If processor not ready, buffer
               if (!proc.RREADY) begin
-                // Buffer the read request if manager not ready
-                buffered_read_valid <= 1;
-                buffered_read_addr <= proc.ARADDR;
+                // Manager not ready for response, transition to wait state
                 current_state <= CACHE_AWAIT_MANAGER_READY;
               end
             end else begin
@@ -336,7 +388,6 @@ module AxilCache #(
               miss_addr <= proc.ARADDR;
               miss_is_read <= 1;
               proc.ARREADY <= 0;
-              proc.RVALID <= 0;
 
               if (need_writeback) begin
                 // Need to writeback dirty data first
@@ -357,6 +408,21 @@ module AxilCache #(
                 mem.RREADY <= 1;
               end
             end
+          end
+
+          // // Handle delayed read hit response
+          // if (read_hit_detected) begin
+          //   read_hit_detected <= 0;
+          //   read_hit_waiting <= 1;
+          //   proc.RVALID <= 1;
+          //   proc.RDATA <= data[read_hit_index];  // Directly use the cached data
+          // end
+
+          // Clean up responses when manager has accepted them
+          if (proc.RVALID && proc.RREADY) begin
+            proc.RVALID <= 0;
+            read_hit_waiting <= 0;
+            proc.ARREADY <= 1;
           end  // Handle write hits
           else if (proc.AWVALID && proc.AWREADY && proc.WVALID && proc.WREADY) begin
             if (valid[index] && (tag[index] == addr_tag)) begin
@@ -411,12 +477,16 @@ module AxilCache #(
             if (valid[index] && (tag[index] == addr_tag)) begin
               // Cache hit for buffered read
               proc.RVALID <= 1;
-              proc.RDATA  <= data[index];
+              // proc.RDATA <= next_rdata;
+              proc.RDATA <= data[index];  // Directly use the cached data
+              read_hit_waiting <= 1;
+              read_hit_index <= index;
 
               if (proc.RREADY) begin
                 // Manager ready, clear buffer
                 buffered_read_valid <= 0;
-                buffered_read_addr  <= 0;
+                buffered_read_addr <= 0;
+                read_hit_waiting <= 0;
               end else begin
                 // Manager still not ready
                 current_state <= CACHE_AWAIT_MANAGER_READY;
@@ -448,18 +518,6 @@ module AxilCache #(
             end
           end
 
-          // Clean up responses when manager has accepted them
-          if (proc.RVALID && proc.RREADY) begin
-            proc.RVALID  <= 0;
-            proc.RDATA   <= 0;
-            proc.ARREADY <= 1;
-          end
-
-          if (proc.BVALID && proc.BREADY) begin
-            proc.BVALID  <= 0;
-            proc.AWREADY <= 1;
-            proc.WREADY  <= 1;
-          end
         end
 
         CACHE_AWAIT_WRITEBACK_RESPONSE: begin
@@ -501,7 +559,10 @@ module AxilCache #(
             if (miss_is_read) begin
               // For read miss, return data to processor
               proc.RVALID  <= 1;
-              proc.RDATA   <= mem.RDATA;
+              // proc.RDATA   <= next_rdata;
+              proc.RDATA   <= mem.RDATA;  // Directly use memory data
+
+              // proc.RDATA is assigned in always_comb
               proc.ARREADY <= proc.RREADY;
 
               if (proc.RREADY) begin
@@ -539,10 +600,15 @@ module AxilCache #(
         end
 
         CACHE_AWAIT_MANAGER_READY: begin
+
+
+          // Ensure ARREADY is deasserted while buffering a response
+          proc.ARREADY <= 0;
+
           if (proc.RVALID && proc.RREADY) begin
             // Read response accepted
             proc.RVALID <= 0;
-            proc.RDATA <= 0;
+            read_hit_waiting <= 0;
             buffered_read_valid <= 0;
             current_state <= CACHE_AVAILABLE;
             proc.ARREADY <= 1;
@@ -555,6 +621,7 @@ module AxilCache #(
             proc.AWREADY  <= 1;
             proc.WREADY   <= 1;
           end
+
         end
       endcase
     end
