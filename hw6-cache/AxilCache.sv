@@ -184,9 +184,6 @@ module AxilCache #(
 );
 
   // TODO: calculate these
-  // localparam int BlockOffsetBits = 0;
-  // localparam int IndexBits = 0;
-  // localparam int TagBits = 0;
 
   // Calculate addressing constants
   localparam int BlockOffsetBits = 2;  // log2(4) for 4B blocks
@@ -223,8 +220,6 @@ module AxilCache #(
   logic read_hit_detected;  // detect a hit in the current cycle
   logic read_hit_waiting;  // indicates we're waiting to respond to a hit
   logic [IndexBits-1:0] read_hit_index;  // store the index for delayed response
-
-  // logic [31:0] next_rdata;  // intermediate signal for RDATA assignment
 
   // initialize cache state to all zeroes
   genvar seti;
@@ -280,36 +275,6 @@ module AxilCache #(
     need_writeback = valid[index] && dirty[index] && (tag[index] != addr_tag);
   end
 
-  // Handle RDATA combinational assignment
-  // always_comb begin
-  //   // For miss responses: direct connection between memory and processor
-  //   if (current_state == CACHE_AWAIT_FILL_RESPONSE && mem.RVALID) begin
-  //     proc.RDATA = mem.RDATA;  // Combinational assignment for miss responses
-  //   end else if (read_hit_waiting) begin
-  //     proc.RDATA = data[read_hit_index];  // Delayed response for hits
-  //   end else begin
-  //     proc.RDATA = '0;
-  //   end
-  // end
-
-  // Handle RDATA combinational assignment
-  // always_comb begin
-  //   // For miss responses: direct connection between memory and processor
-  //   if (current_state == CACHE_AWAIT_FILL_RESPONSE && mem.RVALID) begin
-  //     next_rdata = mem.RDATA;  // Combinational assignment for miss responses
-  //   end else if (read_hit_waiting) begin
-  //     next_rdata = data[read_hit_index];  // Delayed response for hits
-  //   end else begin
-  //     next_rdata = '0;
-  //   end
-  // end
-
-  // always_ff @(posedge ACLK) begin
-  //   if (!ARESETn) begin  // NB: reset when ARESETn == 0
-  //     current_state <= CACHE_AVAILABLE;
-  //   end
-  // end
-
   always_ff @(posedge ACLK) begin
     if (!ARESETn) begin  // Reset state
       current_state <= CACHE_AVAILABLE;
@@ -348,11 +313,6 @@ module AxilCache #(
       read_hit_waiting <= 0;
       read_hit_index <= 0;
 
-      // next_rdata <= 0;
-
-      // For RDATA generation 
-      // logic [31:0] next_rdata;  // intermediate signal for RDATA assignment
-
     end else begin
       case (current_state)
         CACHE_AVAILABLE: begin
@@ -360,17 +320,6 @@ module AxilCache #(
           // Handle read hits with proper timing
           if (proc.ARVALID && proc.ARREADY) begin
             if (valid[index] && (tag[index] == addr_tag)) begin
-              // // Detect a hit but delay the response by one cycle
-              // read_hit_detected <= 1;
-              // read_hit_index <= index;
-              // proc.ARREADY <= proc.RREADY;  // Can accept another request if ready
-
-              // if (!proc.RREADY) begin
-              //   // Buffer the read request if manager not ready
-              //   buffered_read_valid <= 1;
-              //   buffered_read_addr <= proc.ARADDR;
-              //   current_state <= CACHE_AWAIT_MANAGER_READY;
-              // end
 
               // For cache hit, immediately set RVALID and RDATA
               proc.RVALID  <= 1;
@@ -409,14 +358,6 @@ module AxilCache #(
               end
             end
           end
-
-          // // Handle delayed read hit response
-          // if (read_hit_detected) begin
-          //   read_hit_detected <= 0;
-          //   read_hit_waiting <= 1;
-          //   proc.RVALID <= 1;
-          //   proc.RDATA <= data[read_hit_index];  // Directly use the cached data
-          // end
 
           // Clean up responses when manager has accepted them
           if (proc.RVALID && proc.RREADY) begin
