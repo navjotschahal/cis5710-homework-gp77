@@ -183,7 +183,10 @@ module AxilCache #(
     axi_if.manager mem
 );
 
-  // TODO: calculate these
+  // // TODO: calculate these
+  // localparam int BlockOffsetBits = 0;
+  // localparam int IndexBits = 0;
+  // localparam int TagBits = 0;
 
   // Calculate addressing constants
   localparam int BlockOffsetBits = 2;  // log2(4) for 4B blocks
@@ -191,35 +194,59 @@ module AxilCache #(
   localparam int TagBits = 32 - IndexBits - BlockOffsetBits;  // rest of address bits
 
   // cache state
-  cache_state_t current_state;
+  cache_state_t current_state, next_state;
   // main cache structures: do not rename as tests reference these names
   logic [BLOCK_SIZE_BITS-1:0] data[NUM_SETS];
   logic [TagBits-1:0] tag[NUM_SETS];
   logic [0:0] valid[NUM_SETS];
   logic [0:0] dirty[NUM_SETS];
 
-  // Address parsing
-  logic [IndexBits-1:0] index;
-  logic [TagBits-1:0] addr_tag;
+  // Address parsing registers
+  logic [IndexBits-1:0] index, next_index;
+  logic [TagBits-1:0] addr_tag, next_addr_tag;
 
   // For handling cache misses
-  logic [31:0] miss_addr;
-  logic miss_is_read;
-  logic [31:0] miss_wdata;
-  logic [3:0] miss_wstrb;
+  logic [31:0] miss_addr, next_miss_addr;
+  logic miss_is_read, next_miss_is_read;
+  logic [31:0] miss_wdata, next_miss_wdata;
+  logic [3:0] miss_wstrb, next_miss_wstrb;
+
+  // For read request tracking
+  logic read_request_pending, next_read_request_pending;
+  logic [31:0] pending_read_addr, next_pending_read_addr;
+  logic [IndexBits-1:0] pending_read_index, next_pending_read_index;
 
   // Buffer for read response
-  logic buffered_read_valid;
-  logic [31:0] buffered_read_addr;
+  logic buffered_read_valid, next_buffered_read_valid;
+  logic [31:0] buffered_read_addr, next_buffered_read_addr;
 
   // For write handling during misses
   logic need_writeback;
   logic [31:0] writeback_addr;
 
-  // For read hit timing control
-  logic read_hit_detected;  // detect a hit in the current cycle
-  logic read_hit_waiting;  // indicates we're waiting to respond to a hit
-  logic [IndexBits-1:0] read_hit_index;  // store the index for delayed response
+  // AXI signals
+  logic next_proc_arready;
+  logic next_proc_rvalid;
+  logic [31:0] next_proc_rdata;
+  logic next_proc_awready;
+  logic next_proc_wready;
+  logic next_proc_bvalid;
+
+  logic next_mem_arvalid;
+  logic [31:0] next_mem_araddr;
+  logic next_mem_rready;
+  logic next_mem_awvalid;
+  logic [31:0] next_mem_awaddr;
+  logic next_mem_wvalid;
+  logic [31:0] next_mem_wdata;
+  logic [3:0] next_mem_wstrb;
+  logic next_mem_bready;
+
+  // Data signals
+  logic [BLOCK_SIZE_BITS-1:0] next_data[NUM_SETS];
+  logic [TagBits-1:0] next_tag[NUM_SETS];
+  logic [0:0] next_valid[NUM_SETS];
+  logic [0:0] next_dirty[NUM_SETS];
 
   // initialize cache state to all zeroes
   genvar seti;
@@ -249,7 +276,7 @@ module AxilCache #(
 
   // Calculate index and tag based on current request
   always_comb begin
-    // Default address parsing for AVAILABLE state
+    // Default address parsing
     if (proc.ARVALID) begin
       index = proc.ARADDR[BlockOffsetBits+IndexBits-1:BlockOffsetBits];
       addr_tag = proc.ARADDR[31:BlockOffsetBits+IndexBits];
@@ -273,10 +300,256 @@ module AxilCache #(
 
     // Determine if writeback is needed on a miss
     need_writeback = valid[index] && dirty[index] && (tag[index] != addr_tag);
+
   end
 
+  // Main FSM combinational logic
+  always_comb begin
+    // Default: maintain current values
+    next_state = current_state;
+    next_index = index;
+    next_addr_tag = addr_tag;
+    next_miss_addr = miss_addr;
+    next_miss_is_read = miss_is_read;
+    next_miss_wdata = miss_wdata;
+    next_miss_wstrb = miss_wstrb;
+    next_read_request_pending = read_request_pending;
+    next_pending_read_addr = pending_read_addr;
+    next_pending_read_index = pending_read_index;
+    next_buffered_read_valid = buffered_read_valid;
+    next_buffered_read_addr = buffered_read_addr;
+
+    // Default output signals
+    next_proc_arready = proc.ARREADY;
+    next_proc_rvalid = proc.RVALID;
+    next_proc_rdata = proc.RDATA;
+    next_proc_awready = proc.AWREADY;
+    next_proc_wready = proc.WREADY;
+    next_proc_bvalid = proc.BVALID;
+
+    next_mem_arvalid = mem.ARVALID;
+    next_mem_araddr = mem.ARADDR;
+    next_mem_rready = mem.RREADY;
+    next_mem_awvalid = mem.AWVALID;
+    next_mem_awaddr = mem.AWADDR;
+    next_mem_wvalid = mem.WVALID;
+    next_mem_wdata = mem.WDATA;
+    next_mem_wstrb = mem.WSTRB;
+    next_mem_bready = mem.BREADY;
+
+    // Default data signals
+    for (int i = 0; i < NUM_SETS; i++) begin
+      next_data[i]  = data[i];
+      next_tag[i]   = tag[i];
+      next_valid[i] = valid[i];
+      next_dirty[i] = dirty[i];
+    end
+
+    // FSM logic
+    case (current_state)
+      CACHE_AVAILABLE: begin
+        // Default ready signals
+        next_proc_awready = 1;
+        next_proc_wready  = 1;
+
+        // Allow pipelined read requests - be ready for new requests except when buffering
+        next_proc_arready = !proc.RVALID || proc.RREADY;
+
+        // Process new read requests
+        if (proc.ARVALID && proc.ARREADY) begin
+          next_pending_read_addr = proc.ARADDR;
+          next_pending_read_index = proc.ARADDR[BlockOffsetBits+IndexBits-1:BlockOffsetBits];
+          next_read_request_pending = 1;
+        end
+
+        // Generate response for pending read
+        if (read_request_pending && (!proc.RVALID || (proc.RVALID && proc.RREADY))) begin
+          next_read_request_pending = 0;
+
+          if (valid[pending_read_index] && (tag[pending_read_index] == pending_read_addr[31:BlockOffsetBits+IndexBits])) begin
+            // Cache hit - respond in next cycle
+            next_proc_rvalid = 1;
+            next_proc_rdata  = data[pending_read_index];
+          end else begin
+            // Cache miss - need to fetch from memory
+            next_miss_addr = pending_read_addr;
+            next_miss_is_read = 1;
+            next_proc_arready = 0;
+
+            if (need_writeback) begin
+              // Need to writeback dirty data first
+              next_state = CACHE_AWAIT_WRITEBACK_RESPONSE;
+              next_mem_awvalid = 1;
+              next_mem_awaddr = writeback_addr;
+              next_mem_wvalid = 1;
+              next_mem_wdata = data[pending_read_index];
+              next_mem_wstrb = 4'b1111;  // Write all bytes
+              next_mem_bready = 1;
+            end else begin
+              // Can directly fetch from memory
+              next_state = CACHE_AWAIT_FILL_RESPONSE;
+              next_mem_arvalid = 1;
+              next_mem_araddr = pending_read_addr;
+              next_mem_rready = 1;
+            end
+          end
+        end
+
+        // Clean up read responses
+        if (proc.RVALID && proc.RREADY) begin
+          next_proc_rvalid = 0;
+        end
+
+        // Handle write hits
+        if (proc.AWVALID && proc.AWREADY && proc.WVALID && proc.WREADY) begin
+          if (valid[index] && (tag[index] == addr_tag)) begin
+            // Cache hit - update data and mark dirty
+            if (proc.WSTRB[0]) next_data[index][7:0] = proc.WDATA[7:0];
+            if (proc.WSTRB[1]) next_data[index][15:8] = proc.WDATA[15:8];
+            if (proc.WSTRB[2]) next_data[index][23:16] = proc.WDATA[23:16];
+            if (proc.WSTRB[3]) next_data[index][31:24] = proc.WDATA[31:24];
+
+            next_dirty[index] = 1;
+            next_proc_bvalid  = 1;
+
+            // Can accept another request if manager ready
+            next_proc_awready = proc.BREADY;
+            next_proc_wready  = proc.BREADY;
+
+            if (!proc.BREADY) begin
+              next_state = CACHE_AWAIT_MANAGER_READY;
+            end
+          end else begin
+            // Cache miss - need to fetch from memory
+            next_miss_addr = proc.AWADDR;
+            next_miss_is_read = 0;
+            next_miss_wdata = proc.WDATA;
+            next_miss_wstrb = proc.WSTRB;
+            next_proc_awready = 0;
+            next_proc_wready = 0;
+
+            if (need_writeback) begin
+              // Need to writeback dirty data first
+              next_state = CACHE_AWAIT_WRITEBACK_RESPONSE;
+              next_mem_awvalid = 1;
+              next_mem_awaddr = writeback_addr;
+              next_mem_wvalid = 1;
+              next_mem_wdata = data[index];
+              next_mem_wstrb = 4'b1111;
+              next_mem_bready = 1;
+            end else begin
+              // Can directly fetch from memory
+              next_state = CACHE_AWAIT_FILL_RESPONSE;
+              next_mem_arvalid = 1;
+              next_mem_araddr = proc.AWADDR;
+              next_mem_rready = 1;
+            end
+          end
+        end
+      end
+
+      CACHE_AWAIT_WRITEBACK_RESPONSE: begin
+        // Wait for memory to accept writeback request
+        if (mem.AWREADY && mem.AWVALID) begin
+          next_mem_awvalid = 0;
+        end
+
+        if (mem.WREADY && mem.WVALID) begin
+          next_mem_wvalid = 0;
+        end
+
+        // Wait for memory to confirm writeback completion
+        if (mem.BVALID && mem.BREADY) begin
+          next_mem_bready = 0;
+
+          // Proceed to fetch data for the miss
+          next_state = CACHE_AWAIT_FILL_RESPONSE;
+          next_mem_arvalid = 1;
+          next_mem_araddr = miss_addr;
+          next_mem_rready = 1;
+        end
+      end
+
+      CACHE_AWAIT_FILL_RESPONSE: begin
+        // Wait for memory to accept read request
+        if (mem.ARREADY && mem.ARVALID) begin
+          next_mem_arvalid = 0;
+        end
+
+        // Wait for memory to return data
+        if (mem.RVALID && mem.RREADY) begin
+          // Update cache with fetched data
+          next_data[index]  = mem.RDATA;
+          next_tag[index]   = addr_tag;
+          next_valid[index] = 1;
+
+          if (miss_is_read) begin
+            // For read miss, return data to processor
+            next_proc_rvalid  = 1;
+            next_proc_rdata   = mem.RDATA;
+            next_proc_arready = proc.RREADY;
+
+            if (proc.RREADY) begin
+              // Return to available state if manager ready
+              next_state = CACHE_AVAILABLE;
+              next_mem_rready = 0;
+            end else begin
+              // Manager not ready for response
+              next_state = CACHE_AWAIT_MANAGER_READY;
+              next_mem_rready = 0;
+            end
+          end else begin
+            // For write miss, update cache with write data
+            if (miss_wstrb[0]) next_data[index][7:0] = miss_wdata[7:0];
+            if (miss_wstrb[1]) next_data[index][15:8] = miss_wdata[15:8];
+            if (miss_wstrb[2]) next_data[index][23:16] = miss_wdata[23:16];
+            if (miss_wstrb[3]) next_data[index][31:24] = miss_wdata[31:24];
+
+            next_dirty[index] = 1;
+            next_proc_bvalid  = 1;
+
+            if (proc.BREADY) begin
+              // Return to available state if manager ready
+              next_state = CACHE_AVAILABLE;
+              next_proc_awready = 1;
+              next_proc_wready = 1;
+              next_mem_rready = 0;
+            end else begin
+              // Manager not ready for response
+              next_state = CACHE_AWAIT_MANAGER_READY;
+              next_mem_rready = 0;
+            end
+          end
+        end
+      end
+
+      CACHE_AWAIT_MANAGER_READY: begin
+        // Always deassert ready signals while waiting
+        next_proc_arready = 0;
+        next_proc_awready = 0;
+        next_proc_wready  = 0;
+
+        if (proc.RVALID && proc.RREADY) begin
+          // Read response accepted
+          next_proc_rvalid = 0;
+          next_read_request_pending = 0;
+          next_state = CACHE_AVAILABLE;
+          next_proc_arready = 1;
+        end else if (proc.BVALID && proc.BREADY) begin
+          // Write response accepted
+          next_proc_bvalid = 0;
+          next_state = CACHE_AVAILABLE;
+          next_proc_awready = 1;
+          next_proc_wready = 1;
+        end
+      end
+    endcase
+  end
+
+  // Sequential logic - update state registers
   always_ff @(posedge ACLK) begin
-    if (!ARESETn) begin  // Reset state
+    if (!ARESETn) begin
+      // Reset state
       current_state <= CACHE_AVAILABLE;
 
       // Reset buffers
@@ -286,12 +559,14 @@ module AxilCache #(
       miss_is_read <= 0;
       miss_wdata <= 0;
       miss_wstrb <= 0;
+      read_request_pending <= 0;
+      pending_read_addr <= 0;
+      pending_read_index <= 0;
 
       // Reset proc interface signals
       proc.ARREADY <= 1;
       proc.RVALID <= 0;
       proc.RDATA <= 0;
-      // proc.RDATA <= next_rdata;
       proc.AWREADY <= 1;
       proc.WREADY <= 1;
       proc.BVALID <= 0;
@@ -309,264 +584,57 @@ module AxilCache #(
       mem.WSTRB <= 0;
       mem.BREADY <= 0;
 
-      read_hit_detected <= 0;
-      read_hit_waiting <= 0;
-      read_hit_index <= 0;
-
     end else begin
-      case (current_state)
-        CACHE_AVAILABLE: begin
+      // Update state
+      current_state <= next_state;
 
-          // Handle read hits with proper timing
-          if (proc.ARVALID && proc.ARREADY) begin
-            if (valid[index] && (tag[index] == addr_tag)) begin
+      // Update internal registers
+      buffered_read_valid <= next_buffered_read_valid;
+      buffered_read_addr <= next_buffered_read_addr;
+      miss_addr <= next_miss_addr;
+      miss_is_read <= next_miss_is_read;
+      miss_wdata <= next_miss_wdata;
+      miss_wstrb <= next_miss_wstrb;
+      read_request_pending <= next_read_request_pending;
+      pending_read_addr <= next_pending_read_addr;
+      pending_read_index <= next_pending_read_index;
 
-              // For cache hit, immediately set RVALID and RDATA
-              proc.RVALID  <= 1;
-              proc.RDATA   <= data[index];
+      // Update data
+      for (int i = 0; i < NUM_SETS; i++) begin
+        data[i]  <= next_data[i];
+        tag[i]   <= next_tag[i];
+        valid[i] <= next_valid[i];
+        dirty[i] <= next_dirty[i];
+      end
 
-              // Can accept another request if manager ready for response
-              proc.ARREADY <= proc.RREADY;
+      // Update output signals
+      proc.ARREADY <= next_proc_arready;
+      proc.RVALID <= next_proc_rvalid;
+      proc.RDATA <= next_proc_rdata;
+      proc.AWREADY <= next_proc_awready;
+      proc.WREADY <= next_proc_wready;
+      proc.BVALID <= next_proc_bvalid;
 
-              if (!proc.RREADY) begin
-                // Manager not ready for response, transition to wait state
-                current_state <= CACHE_AWAIT_MANAGER_READY;
-              end
-            end else begin
-              // Cache miss - need to fetch from memory
-              miss_addr <= proc.ARADDR;
-              miss_is_read <= 1;
-              proc.ARREADY <= 0;
-
-              if (need_writeback) begin
-                // Need to writeback dirty data first
-                current_state <= CACHE_AWAIT_WRITEBACK_RESPONSE;
-                mem.AWVALID <= 1;
-                mem.AWADDR <= writeback_addr;
-                mem.AWPROT <= 0;
-                mem.WVALID <= 1;
-                mem.WDATA <= data[index];
-                mem.WSTRB <= 4'b1111;  // Write all bytes
-                mem.BREADY <= 1;
-              end else begin
-                // Can directly fetch from memory
-                current_state <= CACHE_AWAIT_FILL_RESPONSE;
-                mem.ARVALID <= 1;
-                mem.ARADDR <= proc.ARADDR;
-                mem.ARPROT <= 0;
-                mem.RREADY <= 1;
-              end
-            end
-          end
-
-          // Clean up responses when manager has accepted them
-          if (proc.RVALID && proc.RREADY) begin
-            proc.RVALID <= 0;
-            read_hit_waiting <= 0;
-            proc.ARREADY <= 1;
-          end  // Handle write hits
-          else if (proc.AWVALID && proc.AWREADY && proc.WVALID && proc.WREADY) begin
-            if (valid[index] && (tag[index] == addr_tag)) begin
-              // Cache hit - update data and mark dirty
-              if (proc.WSTRB[0]) data[index][7:0] <= proc.WDATA[7:0];
-              if (proc.WSTRB[1]) data[index][15:8] <= proc.WDATA[15:8];
-              if (proc.WSTRB[2]) data[index][23:16] <= proc.WDATA[23:16];
-              if (proc.WSTRB[3]) data[index][31:24] <= proc.WDATA[31:24];
-
-              dirty[index] <= 1;
-              proc.BVALID  <= 1;
-
-              // Can accept another request if consumer is ready
-              proc.AWREADY <= proc.BREADY;
-              proc.WREADY  <= proc.BREADY;
-
-              if (!proc.BREADY) begin
-                // Transition to wait state if manager not ready
-                current_state <= CACHE_AWAIT_MANAGER_READY;
-              end
-            end else begin
-              // Cache miss - need to fetch from memory
-              miss_addr <= proc.AWADDR;
-              miss_is_read <= 0;
-              miss_wdata <= proc.WDATA;
-              miss_wstrb <= proc.WSTRB;
-              proc.AWREADY <= 0;
-              proc.WREADY <= 0;
-
-              if (need_writeback) begin
-                // Need to writeback dirty data first
-                current_state <= CACHE_AWAIT_WRITEBACK_RESPONSE;
-                mem.AWVALID <= 1;
-                mem.AWADDR <= writeback_addr;
-                mem.AWPROT <= 0;
-                mem.WVALID <= 1;
-                mem.WDATA <= data[index];
-                mem.WSTRB <= 4'b1111;  // Write all bytes
-                mem.BREADY <= 1;
-              end else begin
-                // Can directly fetch from memory
-                current_state <= CACHE_AWAIT_FILL_RESPONSE;
-                mem.ARVALID <= 1;
-                mem.ARADDR <= proc.AWADDR;
-                mem.ARPROT <= 0;
-                mem.RREADY <= 1;
-              end
-            end
-          end  // Handle buffered read
-          else if (buffered_read_valid) begin
-            // Process the buffered read now
-            if (valid[index] && (tag[index] == addr_tag)) begin
-              // Cache hit for buffered read
-              proc.RVALID <= 1;
-              // proc.RDATA <= next_rdata;
-              proc.RDATA <= data[index];  // Directly use the cached data
-              read_hit_waiting <= 1;
-              read_hit_index <= index;
-
-              if (proc.RREADY) begin
-                // Manager ready, clear buffer
-                buffered_read_valid <= 0;
-                buffered_read_addr <= 0;
-                read_hit_waiting <= 0;
-              end else begin
-                // Manager still not ready
-                current_state <= CACHE_AWAIT_MANAGER_READY;
-              end
-            end else begin
-              // Cache miss for buffered read
-              miss_addr <= buffered_read_addr;
-              miss_is_read <= 1;
-              buffered_read_valid <= 0;
-
-              if (need_writeback) begin
-                // Need to writeback dirty data first
-                current_state <= CACHE_AWAIT_WRITEBACK_RESPONSE;
-                mem.AWVALID <= 1;
-                mem.AWADDR <= writeback_addr;
-                mem.AWPROT <= 0;
-                mem.WVALID <= 1;
-                mem.WDATA <= data[index];
-                mem.WSTRB <= 4'b1111;
-                mem.BREADY <= 1;
-              end else begin
-                // Can directly fetch from memory
-                current_state <= CACHE_AWAIT_FILL_RESPONSE;
-                mem.ARVALID <= 1;
-                mem.ARADDR <= buffered_read_addr;
-                mem.ARPROT <= 0;
-                mem.RREADY <= 1;
-              end
-            end
-          end
-
-        end
-
-        CACHE_AWAIT_WRITEBACK_RESPONSE: begin
-          // Wait for memory to accept writeback request
-          if (mem.AWREADY && mem.AWVALID) begin
-            mem.AWVALID <= 0;
-          end
-
-          if (mem.WREADY && mem.WVALID) begin
-            mem.WVALID <= 0;
-          end
-
-          // Wait for memory to confirm writeback completion
-          if (mem.BVALID && mem.BREADY) begin
-            mem.BREADY <= 0;
-
-            // Proceed to fetch data for the miss
-            current_state <= CACHE_AWAIT_FILL_RESPONSE;
-            mem.ARVALID <= 1;
-            mem.ARADDR <= miss_addr;
-            mem.ARPROT <= 0;
-            mem.RREADY <= 1;
-          end
-        end
-
-        CACHE_AWAIT_FILL_RESPONSE: begin
-          // Wait for memory to accept read request
-          if (mem.ARREADY && mem.ARVALID) begin
-            mem.ARVALID <= 0;
-          end
-
-          // Wait for memory to return data
-          if (mem.RVALID && mem.RREADY) begin
-            // Update cache with fetched data
-            data[index]  <= mem.RDATA;
-            tag[index]   <= addr_tag;
-            valid[index] <= 1;
-
-            if (miss_is_read) begin
-              // For read miss, return data to processor
-              proc.RVALID  <= 1;
-              // proc.RDATA   <= next_rdata;
-              proc.RDATA   <= mem.RDATA;  // Directly use memory data
-
-              // proc.RDATA is assigned in always_comb
-              proc.ARREADY <= proc.RREADY;
-
-              if (proc.RREADY) begin
-                // Return to available state if manager ready
-                current_state <= CACHE_AVAILABLE;
-                mem.RREADY <= 0;
-              end else begin
-                // Manager not ready for response
-                current_state <= CACHE_AWAIT_MANAGER_READY;
-                mem.RREADY <= 0;
-              end
-            end else begin
-              // For write miss, update cache with write data
-              if (miss_wstrb[0]) data[index][7:0] <= miss_wdata[7:0];
-              if (miss_wstrb[1]) data[index][15:8] <= miss_wdata[15:8];
-              if (miss_wstrb[2]) data[index][23:16] <= miss_wdata[23:16];
-              if (miss_wstrb[3]) data[index][31:24] <= miss_wdata[31:24];
-
-              dirty[index] <= 1;
-              proc.BVALID  <= 1;
-
-              if (proc.BREADY) begin
-                // Return to available state if manager ready
-                current_state <= CACHE_AVAILABLE;
-                proc.AWREADY <= 1;
-                proc.WREADY <= 1;
-                mem.RREADY <= 0;
-              end else begin
-                // Manager not ready for response
-                current_state <= CACHE_AWAIT_MANAGER_READY;
-                mem.RREADY <= 0;
-              end
-            end
-          end
-        end
-
-        CACHE_AWAIT_MANAGER_READY: begin
-
-
-          // Ensure ARREADY is deasserted while buffering a response
-          proc.ARREADY <= 0;
-
-          if (proc.RVALID && proc.RREADY) begin
-            // Read response accepted
-            proc.RVALID <= 0;
-            read_hit_waiting <= 0;
-            buffered_read_valid <= 0;
-            current_state <= CACHE_AVAILABLE;
-            proc.ARREADY <= 1;
-          end
-
-          if (proc.BVALID && proc.BREADY) begin
-            // Write response accepted
-            proc.BVALID   <= 0;
-            current_state <= CACHE_AVAILABLE;
-            proc.AWREADY  <= 1;
-            proc.WREADY   <= 1;
-          end
-
-        end
-      endcase
+      mem.ARVALID <= next_mem_arvalid;
+      mem.ARADDR <= next_mem_araddr;
+      mem.ARPROT <= 0;  // Always 0
+      mem.RREADY <= next_mem_rready;
+      mem.AWVALID <= next_mem_awvalid;
+      mem.AWADDR <= next_mem_awaddr;
+      mem.AWPROT <= 0;  // Always 0
+      mem.WVALID <= next_mem_wvalid;
+      mem.WDATA <= next_mem_wdata;
+      mem.WSTRB <= next_mem_wstrb;
+      mem.BREADY <= next_mem_bready;
     end
   end
+
+
+  // always_ff @(posedge ACLK) begin
+  //   if (!ARESETn) begin // NB: reset when ARESETn == 0
+  //     current_state <= CACHE_AVAILABLE;
+  //   end
+  // end
 
 endmodule  // AxilCache
 
