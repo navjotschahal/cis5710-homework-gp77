@@ -386,15 +386,17 @@ module AxilCache #(
             next_proc_rvalid = 1'b1;  // Drive response combinatorially THIS cycle
             next_proc_rdata  = data[req_index];  // Drive response combinatorially THIS cycle
 
+            /////// al;dfkjalkjf
+
             if (!proc.RREADY) begin  // Check if manager is ready THIS cycle
               // Manager NOT ready, need to wait
               next_state = CACHE_AWAIT_MANAGER_READY;
               next_pending_response_is_read = 1'b1;  // Flag as pending read
               next_buffered_proc_rdata = data[req_index];  // Buffer data for wait state
               // Block new requests NEXT cycle while waiting
-              next_proc_arready = 1'b0;
-              next_proc_awready = 1'b0;
-              next_proc_wready = 1'b0;
+              // next_proc_arready = 1'b0;
+              // next_proc_awready = 1'b0;
+              // next_proc_wready = 1'b0;
             end else begin
               // Manager IS ready, handshake completes THIS cycle. Stay AVAILABLE
               next_state = CACHE_AVAILABLE;
@@ -454,10 +456,11 @@ module AxilCache #(
               // Manager NOT ready, need to wait
               next_state = CACHE_AWAIT_MANAGER_READY;
               next_pending_response_is_read = 1'b0;  // Flag as pending write response
+              next_buffered_proc_rdata = data[req_index];  // Buffer data for wait state
               // Block new requests NEXT cycle while waiting
-              next_proc_arready = 1'b0;
-              next_proc_awready = 1'b0;
-              next_proc_wready = 1'b0;
+              // next_proc_arready = 1'b0;
+              // next_proc_awready = 1'b0;
+              // next_proc_wready = 1'b0;
             end else begin
               // Manager IS ready, handshake completes THIS cycle. Stay AVAILABLE.
               next_state = CACHE_AVAILABLE;
