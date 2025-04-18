@@ -190,6 +190,13 @@ module AxilCache #(
 
   // cache state
   cache_state_t current_state, next_state;
+
+  // Buffer for read response data while waiting for manager
+  logic [31:0] buffered_proc_rdata, next_buffered_proc_rdata;
+  // Flag to indicate if the pending response is read (vs write)
+  logic pending_response_is_read, next_pending_response_is_read;
+
+
   // main cache structures: do not rename as tests reference these names
   logic [BLOCK_SIZE_BITS-1:0] data[NUM_SETS];
   logic [TagBits-1:0] tag[NUM_SETS];
@@ -303,11 +310,14 @@ module AxilCache #(
 
     // Default processor interface signals - mostly not ready/valid
     next_proc_arready = 1'b0;
-    next_proc_rvalid = proc.RVALID;
-    next_proc_rdata = proc.RDATA;
+    next_proc_rvalid = 1'b0;  // Default RVALID low
+    next_proc_rdata = '0;  // Default RDATA zero
     next_proc_awready = 1'b0;
     next_proc_wready = 1'b0;
-    next_proc_bvalid = proc.BVALID;
+    next_proc_bvalid = 1'b0;  // Default BVALID low
+
+    next_pending_response_is_read = pending_response_is_read;  // Default hold flag
+    next_buffered_proc_rdata = buffered_proc_rdata;
 
     // Default memory interface signals - mostly not ready/valid
     next_mem_arvalid = 1'b0;
@@ -349,7 +359,6 @@ module AxilCache #(
         next_proc_wready  = 1'b1;
 
         // --- Handle clearing of completed responses FIRST ---
-        // Clear completed read response *before* processing new requests
         if (proc.RVALID && proc.RREADY) begin
           next_proc_rvalid  = 1'b0;
           next_read_pending = 1'b0;
@@ -389,8 +398,13 @@ module AxilCache #(
           // Check for hit/miss
           if (valid[req_index] && tag[req_index] == req_tag) begin
             // Hit - respond immediately
-            next_proc_rvalid = 1'b1;
-            next_proc_rdata  = data[req_index];
+            next_state = CACHE_AWAIT_MANAGER_READY;  // Go to wait state for handshake
+            next_pending_response_is_read = 1'b1;  // It's a read response
+            next_buffered_proc_rdata = data[req_index];  // Buffer the hit data
+            // Stop accepting new requests while waiting
+            next_proc_arready = 1'b0;
+            next_proc_awready = 1'b0;  // Also block writes
+            next_proc_wready = 1'b0;  // Also block writes
           end else begin
             // Miss - prepare for memory access 
             next_miss_addr = proc.ARADDR;
@@ -416,7 +430,6 @@ module AxilCache #(
           logic [IndexBits-1:0] req_index = proc.AWADDR[BlockOffsetBits+IndexBits-1:BlockOffsetBits];
           logic [TagBits-1:0] req_tag = proc.AWADDR[31:BlockOffsetBits+IndexBits];
 
-          // De-assert readiness for this cycle as request is accepted
           next_proc_awready = 1'b0;
           next_proc_wready  = 1'b0;
           // Keep read ready signal high
@@ -424,27 +437,19 @@ module AxilCache #(
 
           if (valid[req_index] && (tag[req_index] == req_tag)) begin
             // --- Write Hit ---
-            for (int i = 0; i < (32 / 8); i++) begin
+            for (int i = 0; i < (32 / 8); i++) begin  // Update data for NEXT cycle
               if (proc.WSTRB[i]) begin
                 next_data[req_index][8*i+:8] = proc.WDATA[8*i+:8];
               end
             end
-            next_dirty[req_index] = 1'b1;
-            next_proc_bvalid = 1'b1;
+            next_dirty[req_index] = 1'b1;  // Mark dirty for NEXT cycle
+            // The BVALID output is driven combinatorially below.
+            next_state = CACHE_AWAIT_MANAGER_READY;  // Go to wait state for handshake
+            next_pending_response_is_read = 1'b0;  // It's a write response
+            next_proc_arready = 1'b0;  // Also block reads
+            next_proc_awready = 1'b0;
+            next_proc_wready = 1'b0;
 
-            // Always stay ready for the next request immediately
-            next_proc_awready = 1'b1;
-            next_proc_wready = 1'b1;
-            next_proc_arready = 1'b1;
-
-            // Only transition to wait state if manager isn't ready for the response NOW
-            if (!proc.BREADY) begin
-              next_state = CACHE_AWAIT_MANAGER_READY;
-              // Override readiness signals for wait state
-              next_proc_arready = 1'b0;
-              next_proc_awready = 1'b0;
-              next_proc_wready = 1'b0;
-            end
           end else begin
             // --- Write Miss ---
             next_miss_addr = proc.AWADDR;
@@ -471,10 +476,6 @@ module AxilCache #(
       end
 
       CACHE_AWAIT_FILL_RESPONSE: begin
-        // Debug message for memory data
-        // if (mem.RVALID) begin
-        //   $display("Memory data available: 0x%h", mem.RDATA);
-        // end
 
         next_mem_araddr = miss_addr;
 
@@ -488,69 +489,95 @@ module AxilCache #(
 
         // Process memory response
         if (mem.RVALID && mem.RREADY) begin
-          // $display("Memory data accepted: 0x%h", mem.RDATA);
-
-          // Update cache with memory data
+          // Update cache with memory data (for NEXT cycle)
           next_data[index]  = mem.RDATA;
-          next_tag[index]   = addr_tag;
+          next_tag[index]   = addr_tag;  // Use addr_tag calculated from miss_addr
           next_valid[index] = 1'b1;
-          next_dirty[index] = 1'b0;
+          next_dirty[index] = 1'b0;  // Filled line is initially clean
 
           if (miss_is_read) begin
-            // For read misses, respond with data
-            next_proc_rvalid = 1'b1;
-            next_proc_rdata  = mem.RDATA;  // Use memory data directly
-
-            // $display("Setting processor read data to: 0x%h", mem.RDATA);
-
-            if (proc.RREADY) begin
-              next_state = CACHE_AVAILABLE;
-              next_proc_arready = 1'b1;
-              next_proc_awready = 1'b1;
-              next_proc_wready = 1'b1;
-            end else begin
-              next_state = CACHE_AWAIT_MANAGER_READY;
-            end
-          end else begin
-            // For write misses, apply the write and respond
+            next_state = CACHE_AWAIT_MANAGER_READY;  // Go to wait state for handshake
+            next_pending_response_is_read = 1'b1;  // It's a read response
+            next_buffered_proc_rdata = mem.RDATA;  // Buffer the data
+          end else begin  // Write miss fill complete, now apply the write
             for (int i = 0; i < 4; i++) begin
               if (miss_wstrb[i]) begin
+                // Apply write to the data we just fetched
                 next_data[index][8*i+:8] = miss_wdata[8*i+:8];
               end
             end
-            next_dirty[index] = 1'b1;
-            next_proc_bvalid  = 1'b1;
+            next_dirty[index] = 1'b1;  // Set dirty bit for the write
 
-            if (proc.BREADY) begin
-              next_state = CACHE_AVAILABLE;
-              next_proc_arready = 1'b1;  // Also be ready for reads
-              next_proc_awready = 1'b1;
-              next_proc_wready = 1'b1;
-            end else begin
-              next_state = CACHE_AWAIT_MANAGER_READY;
-            end
+            next_state = CACHE_AWAIT_MANAGER_READY;  // Go to wait state for handshake
+            next_pending_response_is_read = 1'b0;  // It's a write response
           end
+          // Implicit else (mem not valid/ready) - stay in this state, keep asserting mem signals
         end
       end
 
       CACHE_AWAIT_MANAGER_READY: begin
-        if (proc.RVALID && proc.RREADY) begin
-          // Read response accepted
-          next_proc_rvalid = 1'b0;
-          next_read_pending = 1'b0;
-          next_state = CACHE_AVAILABLE;
-          next_proc_arready = 1'b1;
-          next_proc_awready = 1'b1;
-          next_proc_wready = 1'b1;
-        end else if (proc.BVALID && proc.BREADY) begin
-          // Write response accepted
-          next_proc_bvalid = 1'b0;
-          next_state = CACHE_AVAILABLE;
-          next_proc_arready = 1'b1;
-          next_proc_awready = 1'b1;
-          next_proc_wready = 1'b1;
+        // Determine outputs based on the type of response we are waiting for
+        if (pending_response_is_read) begin  // Waiting for RREADY
+          // Drive RVALID and RDATA outputs HIGH/correct value THIS cycle
+          next_proc_rvalid = 1'b1;
+          next_proc_rdata  = buffered_proc_rdata;
+
+          // Check if manager is ready THIS cycle
+          if (proc.RREADY) begin
+            // Handshake complete. Transition to AVAILABLE for NEXT cycle.
+            next_state = CACHE_AVAILABLE;
+            // Clear buffer and flag for NEXT cycle's state update.
+            next_buffered_proc_rdata = '0;
+            next_pending_response_is_read = 1'bx;  // Use 'x' or 0
+            // Set processor readiness for NEXT cycle.
+            next_proc_arready = 1'b1;
+            next_proc_awready = 1'b1;
+            next_proc_wready = 1'b1;
+            // NOTE: RVALID/RDATA will become low next cycle due to AVAILABLE state defaults.
+          end
+        end else begin  // Waiting for BREADY
+          // Drive BVALID output HIGH THIS cycle
+          next_proc_bvalid = 1'b1;
+
+          // Check if manager is ready THIS cycle
+          if (proc.BREADY) begin
+            // Handshake complete. Transition to AVAILABLE for NEXT cycle.
+            next_state = CACHE_AVAILABLE;
+            // Clear flag for NEXT cycle's state update.
+            next_pending_response_is_read = 1'bx;  // Use 'x' or 0
+            // Set processor readiness for NEXT cycle.
+            next_proc_arready = 1'b1;
+            next_proc_awready = 1'b1;
+            next_proc_wready = 1'b1;
+            // NOTE: BVALID will become low next cycle due to AVAILABLE state defaults.
+          end
+
         end
-      end
+      end  // End of CACHE_AWAIT_MANAGER_READY case
+
+      CACHE_AWAIT_WRITEBACK_RESPONSE: begin
+
+        next_mem_awvalid = 1'b1;
+        next_mem_awaddr  = writeback_addr;  // Address of block being evicted
+        next_mem_wvalid  = 1'b1;
+        next_mem_wdata   = data[index];  // Data from block being evicted
+        next_mem_wstrb   = '1;  // Write full block (4 bytes)
+
+        next_mem_bready  = 1'b1;
+        if (mem.BVALID) begin  // Note: We use mem.BVALID directly as input
+          next_state       = CACHE_AWAIT_FILL_RESPONSE;
+
+          // Start the memory read request for the original miss address.
+          next_mem_arvalid = 1'b1;
+          next_mem_araddr  = miss_addr;  // Use the stored miss address
+          next_mem_rready  = 1'b1;  // Be ready to accept read data next
+
+          // Deassert write/response signals for the next cycle.
+          next_mem_awvalid = 1'b0;
+          next_mem_wvalid  = 1'b0;
+          next_mem_bready  = 1'b0;
+        end
+      end  // End of CACHE_AWAIT_WRITEBACK_RESPONSE
     endcase
   end
 
@@ -558,40 +585,44 @@ module AxilCache #(
   always_ff @(posedge ACLK) begin
     if (!ARESETn) begin
       // Reset state
-      current_state       <= CACHE_AVAILABLE;
+      current_state            <= CACHE_AVAILABLE;
 
       // Reset buffers
-      buffered_read_valid <= 0;
-      buffered_read_addr  <= 0;
-      miss_addr           <= 0;
-      miss_is_read        <= 0;
-      miss_wdata          <= 0;
-      miss_wstrb          <= 0;
-      read_pending        <= 1'b0;
-      pending_read_addr   <= 0;
-      pending_index       <= 0;
-      pending_tag         <= 0;
+      // buffered_read_valid <= 0;
+      // buffered_read_addr  <= 0;
+      miss_addr                <= 0;
+      miss_is_read             <= 0;
+      miss_wdata               <= 0;
+      miss_wstrb               <= 0;
+      // read_pending        <= 1'b0;
+      // pending_read_addr   <= 0;
+      // pending_index       <= 0;
+      // pending_tag         <= 0;
+
+      buffered_proc_rdata      <= '0;
+      pending_response_is_read <= 1'b0;  // Or 'x'
+
 
       // Reset proc interface signals
-      proc.ARREADY        <= 1;
-      proc.RVALID         <= 0;
-      proc.RDATA          <= 0;
-      proc.AWREADY        <= 1;
-      proc.WREADY         <= 1;
-      proc.BVALID         <= 0;
+      proc.ARREADY             <= 1;  // Default ready high on reset? Or low? Let's keep original.
+      proc.RVALID              <= 0;
+      proc.RDATA               <= 0;
+      proc.AWREADY             <= 1;  // Keep original.
+      proc.WREADY              <= 1;  // Keep original.
+      proc.BVALID              <= 0;
 
       // Reset mem interface signals
-      mem.ARVALID         <= 0;
-      mem.ARADDR          <= 0;
-      mem.ARPROT          <= 0;
-      mem.RREADY          <= 0;
-      mem.AWVALID         <= 0;
-      mem.AWADDR          <= 0;
-      mem.AWPROT          <= 0;
-      mem.WVALID          <= 0;
-      mem.WDATA           <= 0;
-      mem.WSTRB           <= 0;
-      mem.BREADY          <= 0;
+      mem.ARVALID              <= 0;
+      mem.ARADDR               <= 0;
+      mem.ARPROT               <= 0;
+      mem.RREADY               <= 0;
+      mem.AWVALID              <= 0;
+      mem.AWADDR               <= 0;
+      mem.AWPROT               <= 0;
+      mem.WVALID               <= 0;
+      mem.WDATA                <= 0;
+      mem.WSTRB                <= 0;
+      mem.BREADY               <= 0;
 
     end else begin
       proc.RDATA          <= next_proc_rdata;
@@ -618,6 +649,9 @@ module AxilCache #(
         valid[i] <= next_valid[i];
         dirty[i] <= next_dirty[i];
       end
+
+      buffered_proc_rdata <= next_buffered_proc_rdata;
+      pending_response_is_read <= next_pending_response_is_read;
 
       // Update output signals
       proc.ARREADY <= next_proc_arready;
