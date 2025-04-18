@@ -184,9 +184,7 @@ module AxilCache #(
 );
 
   // // TODO: calculate these
-  // localparam int BlockOffsetBits = 0;
-  // localparam int IndexBits = 0;
-  // localparam int TagBits = 0;
+
 
   // Calculate addressing constants
   localparam int BlockOffsetBits = 2;  // log2(4) for 4B blocks
@@ -211,10 +209,16 @@ module AxilCache #(
   logic [31:0] miss_wdata, next_miss_wdata;
   logic [3:0] miss_wstrb, next_miss_wstrb;
 
-  // For read request tracking
-  logic read_request_pending, next_read_request_pending;
-  logic [31:0] pending_read_addr, next_pending_read_addr;
-  logic [IndexBits-1:0] pending_read_index, next_pending_read_index;
+  logic                 read_pending;
+  logic [         31:0] pending_read_addr;
+  logic [IndexBits-1:0] pending_index;
+  logic [  TagBits-1:0] pending_tag;
+
+
+  logic                 next_read_pending;
+  logic [         31:0] next_pending_read_addr;
+  logic [IndexBits-1:0] next_pending_read_index;
+  logic [  TagBits-1:0] next_pending_tag;
 
   // Buffer for read response
   logic buffered_read_valid, next_buffered_read_valid;
@@ -306,38 +310,31 @@ module AxilCache #(
   // Main FSM combinational logic
   always_comb begin
     // Default: maintain current values
-    next_state = current_state;
-    next_index = index;
-    next_addr_tag = addr_tag;
-    next_miss_addr = miss_addr;
-    next_miss_is_read = miss_is_read;
-    next_miss_wdata = miss_wdata;
-    next_miss_wstrb = miss_wstrb;
-    next_read_request_pending = read_request_pending;
-    next_pending_read_addr = pending_read_addr;
-    next_pending_read_index = pending_read_index;
-    next_buffered_read_valid = buffered_read_valid;
-    next_buffered_read_addr = buffered_read_addr;
+    next_state              = current_state;
+    // next_proc_arready = 1;  // Always ready for reads by default
+    next_proc_arready       = (current_state == CACHE_AVAILABLE);
+    next_proc_rvalid        = proc.RVALID;
+    next_proc_rdata         = proc.RDATA;
+    next_proc_awready       = 1;  // Always ready for writes by default
+    next_proc_wready        = 1;
+    next_proc_bvalid        = proc.BVALID;
 
-    // Default output signals
-    next_proc_arready = proc.ARREADY;
-    next_proc_rvalid = proc.RVALID;
-    next_proc_rdata = proc.RDATA;
-    next_proc_awready = proc.AWREADY;
-    next_proc_wready = proc.WREADY;
-    next_proc_bvalid = proc.BVALID;
 
-    next_mem_arvalid = mem.ARVALID;
-    next_mem_araddr = mem.ARADDR;
-    next_mem_rready = mem.RREADY;
-    next_mem_awvalid = mem.AWVALID;
-    next_mem_awaddr = mem.AWADDR;
-    next_mem_wvalid = mem.WVALID;
-    next_mem_wdata = mem.WDATA;
-    next_mem_wstrb = mem.WSTRB;
-    next_mem_bready = mem.BREADY;
 
-    // Default data signals
+    // Default next‑state for our pending‑read bookkeeping
+    next_read_pending       = read_pending;
+    next_pending_read_addr  = pending_read_addr;
+    next_pending_read_index = pending_index;
+    next_pending_tag        = pending_tag;
+
+    // During reset or other operations, memory signals should be off
+    next_mem_arvalid        = 0;
+    next_mem_rready         = 0;
+    next_mem_awvalid        = 0;
+    next_mem_wvalid         = 0;
+    next_mem_bready         = 0;
+
+    // Default data
     for (int i = 0; i < NUM_SETS; i++) begin
       next_data[i]  = data[i];
       next_tag[i]   = tag[i];
@@ -348,56 +345,54 @@ module AxilCache #(
     // FSM logic
     case (current_state)
       CACHE_AVAILABLE: begin
-        // Default ready signals
-        next_proc_awready = 1;
-        next_proc_wready  = 1;
 
-        // Allow pipelined read requests - be ready for new requests except when buffering
-        next_proc_arready = !proc.RVALID || proc.RREADY;
-
-        // Process new read requests
         if (proc.ARVALID && proc.ARREADY) begin
-          next_pending_read_addr = proc.ARADDR;
+          // capture new read request
+          next_pending_read_addr  = proc.ARADDR;
           next_pending_read_index = proc.ARADDR[BlockOffsetBits+IndexBits-1:BlockOffsetBits];
-          next_read_request_pending = 1;
+          next_pending_tag        = proc.ARADDR[31:BlockOffsetBits+IndexBits];
+          next_read_pending       = 1'b1;
         end
 
-        // Generate response for pending read
-        if (read_request_pending && (!proc.RVALID || (proc.RVALID && proc.RREADY))) begin
-          next_read_request_pending = 0;
+        if (proc.RVALID && proc.RREADY) begin
+          // clear pending flag once response accepted
+          next_read_pending = 1'b0;
+        end
 
-          if (valid[pending_read_index] && (tag[pending_read_index] == pending_read_addr[31:BlockOffsetBits+IndexBits])) begin
-            // Cache hit - respond in next cycle
-            next_proc_rvalid = 1;
-            next_proc_rdata  = data[pending_read_index];
+        // Handle read response for pending request
+        if (read_pending) begin
+          // Check for hit/miss
+          if (valid[pending_index] && tag[pending_index] == pending_tag) begin
+            // Hit - set up response
+            next_proc_rvalid = 1'b1;
+            next_proc_rdata  = data[pending_index];
           end else begin
-            // Cache miss - need to fetch from memory
+            // Miss - need to fetch from memory
+            next_proc_arready = 1'b0;
+            next_state = need_writeback ? CACHE_AWAIT_WRITEBACK_RESPONSE : CACHE_AWAIT_FILL_RESPONSE;
             next_miss_addr = pending_read_addr;
-            next_miss_is_read = 1;
-            next_proc_arready = 0;
-
+            next_miss_is_read = 1'b1;
+            // Set up memory request signals
             if (need_writeback) begin
-              // Need to writeback dirty data first
-              next_state = CACHE_AWAIT_WRITEBACK_RESPONSE;
               next_mem_awvalid = 1;
-              next_mem_awaddr = writeback_addr;
-              next_mem_wvalid = 1;
-              next_mem_wdata = data[pending_read_index];
-              next_mem_wstrb = 4'b1111;  // Write all bytes
-              next_mem_bready = 1;
+              next_mem_awaddr  = writeback_addr;
+              next_mem_wvalid  = 1;
+              next_mem_wdata   = data[proc.ARADDR[BlockOffsetBits+IndexBits-1:BlockOffsetBits]];
+              next_mem_wstrb   = 4'b1111;
+              next_mem_bready  = 1;
             end else begin
-              // Can directly fetch from memory
-              next_state = CACHE_AWAIT_FILL_RESPONSE;
               next_mem_arvalid = 1;
-              next_mem_araddr = pending_read_addr;
-              next_mem_rready = 1;
+              next_mem_araddr  = proc.ARADDR;
+              next_mem_rready  = 1;
             end
           end
         end
 
-        // Clean up read responses
+
+        // Clear completed request and shift queue
         if (proc.RVALID && proc.RREADY) begin
           next_proc_rvalid = 0;
+
         end
 
         // Handle write hits
@@ -447,6 +442,52 @@ module AxilCache #(
           end
         end
       end
+
+      CACHE_AWAIT_WRITEBACK_RESPONSE: begin
+        if (!mem.AWVALID) begin
+          next_mem_awvalid = 1;
+          next_mem_awaddr  = writeback_addr;
+        end
+
+        if (!mem.WVALID) begin
+          next_mem_wvalid = 1;
+          next_mem_wdata  = data[index];
+          next_mem_wstrb  = 4'b1111;
+        end
+
+        if (mem.AWREADY) next_mem_awvalid = 0;
+        if (mem.WREADY) next_mem_wvalid = 0;
+        if (mem.BVALID) begin
+          next_mem_bready  = 1;
+          next_state       = CACHE_AWAIT_FILL_RESPONSE;
+          next_mem_arvalid = 1;
+          next_mem_araddr  = miss_addr;
+        end
+      end
+
+
+      CACHE_AWAIT_FILL_RESPONSE: begin
+        if (!mem.ARVALID) begin
+          next_mem_arvalid = 1;
+          next_mem_araddr  = miss_addr;
+        end
+        if (mem.ARREADY) next_mem_arvalid = 0;
+        next_mem_rready = 1;
+        if (mem.RVALID) begin
+          next_data[index]  = mem.RDATA;
+          next_tag[index]   = addr_tag;
+          next_valid[index] = 1;
+          next_proc_rdata   = mem.RDATA;
+          next_proc_rvalid  = 1;
+          next_proc_arready = proc.RREADY;
+          next_state        = proc.RREADY ? CACHE_AVAILABLE : CACHE_AWAIT_MANAGER_READY;
+          next_mem_rready   = 0;
+        end
+      end
+
+
+
+
 
       CACHE_AWAIT_WRITEBACK_RESPONSE: begin
         // Wait for memory to accept writeback request
@@ -531,10 +572,10 @@ module AxilCache #(
 
         if (proc.RVALID && proc.RREADY) begin
           // Read response accepted
-          next_proc_rvalid = 0;
-          next_read_request_pending = 0;
-          next_state = CACHE_AVAILABLE;
-          next_proc_arready = 1;
+          next_proc_rvalid  = 1'b0;
+          next_read_pending = 1'b0;  // <-- clear our simplified flag
+          next_state        = CACHE_AVAILABLE;
+          next_proc_arready = 1'b1;
         end else if (proc.BVALID && proc.BREADY) begin
           // Write response accepted
           next_proc_bvalid = 0;
@@ -550,54 +591,70 @@ module AxilCache #(
   always_ff @(posedge ACLK) begin
     if (!ARESETn) begin
       // Reset state
-      current_state <= CACHE_AVAILABLE;
+      current_state       <= CACHE_AVAILABLE;
 
       // Reset buffers
       buffered_read_valid <= 0;
-      buffered_read_addr <= 0;
-      miss_addr <= 0;
-      miss_is_read <= 0;
-      miss_wdata <= 0;
-      miss_wstrb <= 0;
-      read_request_pending <= 0;
-      pending_read_addr <= 0;
-      pending_read_index <= 0;
+      buffered_read_addr  <= 0;
+      miss_addr           <= 0;
+      miss_is_read        <= 0;
+      miss_wdata          <= 0;
+      miss_wstrb          <= 0;
+      // read_request_pending <= 0;
+      read_pending        <= 1'b0;
+      pending_read_addr   <= 0;
+      // pending_read_index  <= 0;
+      pending_index       <= 0;
+
 
       // Reset proc interface signals
-      proc.ARREADY <= 1;
-      proc.RVALID <= 0;
-      proc.RDATA <= 0;
-      proc.AWREADY <= 1;
-      proc.WREADY <= 1;
-      proc.BVALID <= 0;
+      proc.ARREADY        <= 1;
+      proc.RVALID         <= 0;
+      proc.RDATA          <= 0;
+      proc.AWREADY        <= 1;
+      proc.WREADY         <= 1;
+      proc.BVALID         <= 0;
 
       // Reset mem interface signals
-      mem.ARVALID <= 0;
-      mem.ARADDR <= 0;
-      mem.ARPROT <= 0;
-      mem.RREADY <= 0;
-      mem.AWVALID <= 0;
-      mem.AWADDR <= 0;
-      mem.AWPROT <= 0;
-      mem.WVALID <= 0;
-      mem.WDATA <= 0;
-      mem.WSTRB <= 0;
-      mem.BREADY <= 0;
+      mem.ARVALID         <= 0;
+      mem.ARADDR          <= 0;
+      mem.ARPROT          <= 0;
+      mem.RREADY          <= 0;
+      mem.AWVALID         <= 0;
+      mem.AWADDR          <= 0;
+      mem.AWPROT          <= 0;
+      mem.WVALID          <= 0;
+      mem.WDATA           <= 0;
+      mem.WSTRB           <= 0;
+      mem.BREADY          <= 0;
+
+      read_pending        <= 1'b0;
+      pending_read_addr   <= 0;
+      pending_index       <= 0;
+      pending_tag         <= 0;
 
     end else begin
       // Update state
-      current_state <= next_state;
+      current_state       <= next_state;
+
+      // Update registers
+      read_pending        <= next_read_pending;
+      pending_read_addr   <= next_pending_read_addr;
+      pending_index       <= next_pending_read_index;
+      pending_tag         <= next_pending_tag;
 
       // Update internal registers
       buffered_read_valid <= next_buffered_read_valid;
-      buffered_read_addr <= next_buffered_read_addr;
-      miss_addr <= next_miss_addr;
-      miss_is_read <= next_miss_is_read;
-      miss_wdata <= next_miss_wdata;
-      miss_wstrb <= next_miss_wstrb;
-      read_request_pending <= next_read_request_pending;
-      pending_read_addr <= next_pending_read_addr;
-      pending_read_index <= next_pending_read_index;
+      buffered_read_addr  <= next_buffered_read_addr;
+      miss_addr           <= next_miss_addr;
+      miss_is_read        <= next_miss_is_read;
+      miss_wdata          <= next_miss_wdata;
+      miss_wstrb          <= next_miss_wstrb;
+      // read_request_pending <= next_read_request_pending;
+      read_pending        <= next_read_pending;
+      pending_read_addr   <= next_pending_read_addr;
+      // pending_read_index <= next_pending_read_index;
+      pending_index       <= next_pending_read_index;
 
       // Update data
       for (int i = 0; i < NUM_SETS; i++) begin
@@ -629,12 +686,6 @@ module AxilCache #(
     end
   end
 
-
-  // always_ff @(posedge ACLK) begin
-  //   if (!ARESETn) begin // NB: reset when ARESETn == 0
-  //     current_state <= CACHE_AVAILABLE;
-  //   end
-  // end
 
 endmodule  // AxilCache
 
