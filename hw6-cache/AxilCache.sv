@@ -368,8 +368,6 @@ module AxilCache #(
           next_proc_wready  = 1'b1;
         end
 
-        // --- Process new requests ---
-
         // Process read requests (only if no ongoing read response)
         if (proc.ARVALID && proc.ARREADY) begin
           // Local variables for request parsing (OK to declare here)
@@ -394,11 +392,11 @@ module AxilCache #(
             next_proc_rvalid = 1'b1;
             next_proc_rdata  = data[req_index];
           end else begin
-            // Miss - prepare for memory access (using already declared signals)
+            // Miss - prepare for memory access 
             next_miss_addr = proc.ARADDR;
             next_miss_is_read = 1'b1;
 
-            if (need_writeback) begin  // Use pre-calculated value based on 'index'
+            if (need_writeback) begin
               next_state = CACHE_AWAIT_WRITEBACK_RESPONSE;
               next_mem_awvalid = 1'b1;
               next_mem_awaddr = writeback_addr; // Use pre-calculated value
@@ -415,7 +413,6 @@ module AxilCache #(
           end
         end  // Process write requests (only if no ongoing write response)
         else if (proc.AWVALID && proc.AWREADY && proc.WVALID && proc.WREADY) begin
-          // Local variables for request parsing (OK to declare here)
           logic [IndexBits-1:0] req_index = proc.AWADDR[BlockOffsetBits+IndexBits-1:BlockOffsetBits];
           logic [TagBits-1:0] req_tag = proc.AWADDR[31:BlockOffsetBits+IndexBits];
 
@@ -475,12 +472,11 @@ module AxilCache #(
 
       CACHE_AWAIT_FILL_RESPONSE: begin
         // Debug message for memory data
-        if (mem.RVALID) begin
-          $display("Memory data available: 0x%h", mem.RDATA);
-        end
+        // if (mem.RVALID) begin
+        //   $display("Memory data available: 0x%h", mem.RDATA);
+        // end
 
-        // Make sure memory address is correctly set
-        next_mem_araddr = miss_addr;  // Use the stored miss address
+        next_mem_araddr = miss_addr;
 
         // Keep memory request signals asserted until the request is accepted
         if (!mem.ARREADY || (mem.ARVALID && !mem.ARREADY)) begin
@@ -492,7 +488,7 @@ module AxilCache #(
 
         // Process memory response
         if (mem.RVALID && mem.RREADY) begin
-          $display("Memory data accepted: 0x%h", mem.RDATA);
+          // $display("Memory data accepted: 0x%h", mem.RDATA);
 
           // Update cache with memory data
           next_data[index]  = mem.RDATA;
@@ -505,13 +501,13 @@ module AxilCache #(
             next_proc_rvalid = 1'b1;
             next_proc_rdata  = mem.RDATA;  // Use memory data directly
 
-            $display("Setting processor read data to: 0x%h", mem.RDATA);
+            // $display("Setting processor read data to: 0x%h", mem.RDATA);
 
             if (proc.RREADY) begin
               next_state = CACHE_AVAILABLE;
               next_proc_arready = 1'b1;
-              next_proc_awready = 1'b1;  // Also be ready for writes
-              next_proc_wready = 1'b1;  // Also be ready for writes
+              next_proc_awready = 1'b1;
+              next_proc_wready = 1'b1;
             end else begin
               next_state = CACHE_AWAIT_MANAGER_READY;
             end
@@ -598,8 +594,7 @@ module AxilCache #(
       mem.BREADY          <= 0;
 
     end else begin
-      proc.RDATA          <= next_proc_rdata;  // Make sure this is properly updated
-      // Update state
+      proc.RDATA          <= next_proc_rdata;
       current_state       <= next_state;
 
       // Update registers
@@ -634,19 +629,17 @@ module AxilCache #(
 
       mem.ARVALID <= next_mem_arvalid;
       mem.ARADDR <= next_mem_araddr;
-      mem.ARPROT <= 0;  // Always 0
+      mem.ARPROT <= 0;
       mem.RREADY <= next_mem_rready;
       mem.AWVALID <= next_mem_awvalid;
       mem.AWADDR <= next_mem_awaddr;
-      mem.AWPROT <= 0;  // Always 0
+      mem.AWPROT <= 0;
       mem.WVALID <= next_mem_wvalid;
       mem.WDATA <= next_mem_wdata;
       mem.WSTRB <= next_mem_wstrb;
       mem.BREADY <= next_mem_bready;
     end
   end
-
-
 endmodule  // AxilCache
 
 `ifndef SYNTHESIS
