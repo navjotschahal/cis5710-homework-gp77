@@ -394,9 +394,9 @@ module AxilCache #(
               next_pending_response_is_read = 1'b1;  // Flag as pending read
               next_buffered_proc_rdata = data[req_index];  // Buffer data for wait state
               // Block new requests NEXT cycle while waiting
-              // next_proc_arready = 1'b0;
-              // next_proc_awready = 1'b0;
-              // next_proc_wready = 1'b0;
+              next_proc_arready = 1'b0;
+              next_proc_awready = 1'b0;
+              next_proc_wready = 1'b0;
             end else begin
               // Manager IS ready, handshake completes THIS cycle. Stay AVAILABLE
               next_state = CACHE_AVAILABLE;
@@ -458,9 +458,9 @@ module AxilCache #(
               next_pending_response_is_read = 1'b0;  // Flag as pending write response
               next_buffered_proc_rdata = data[req_index];  // Buffer data for wait state
               // Block new requests NEXT cycle while waiting
-              // next_proc_arready = 1'b0;
-              // next_proc_awready = 1'b0;
-              // next_proc_wready = 1'b0;
+              next_proc_arready = 1'b0;
+              next_proc_awready = 1'b0;
+              next_proc_wready = 1'b0;
             end else begin
               // Manager IS ready, handshake completes THIS cycle. Stay AVAILABLE.
               next_state = CACHE_AVAILABLE;
@@ -539,40 +539,47 @@ module AxilCache #(
       end
 
       CACHE_AWAIT_MANAGER_READY: begin
-        if (pending_response_is_read) begin  // Waiting for RREADY
-          // Drive RVALID and RDATA outputs HIGH/correct value THIS cycle
-          next_proc_rvalid = 1'b1;
-          next_proc_rdata  = buffered_proc_rdata;
+        // Always keep request channels disabled in this state
+        next_proc_arready = 1'b0;
+        next_proc_awready = 1'b0;
+        next_proc_wready  = 1'b0;
 
-          // Check if manager is ready THIS cycle
-          if (proc.RREADY) begin
-            // Handshake complete. Transition to AVAILABLE for NEXT cycle.
+        if (pending_response_is_read) begin  // Waiting for RREADY
+          // Check if handshake complete THIS cycle
+          if (proc.RVALID && proc.RREADY) begin
+            // Handshake complete, immediately deassert RVALID for next cycle
+            next_proc_rvalid = 1'b0;
+            next_proc_rdata = '0;
+            // Transition to AVAILABLE for NEXT cycle
             next_state = CACHE_AVAILABLE;
-            // Clear buffer and flag for NEXT cycle's state update.
+            // Clear buffer and flag
             next_buffered_proc_rdata = '0;
-            next_pending_response_is_read = 1'bx;  // Use 'x' or 0
-            // Set processor readiness for NEXT cycle.
+            next_pending_response_is_read = 1'bx;
+            // Set processor readiness for NEXT cycle
             next_proc_arready = 1'b1;
             next_proc_awready = 1'b1;
             next_proc_wready = 1'b1;
+          end else begin
+            // No handshake yet, keep asserting RVALID
+            next_proc_rvalid = 1'b1;
+            next_proc_rdata  = buffered_proc_rdata;
           end
         end else begin  // Waiting for BREADY
-          // Drive BVALID output HIGH THIS cycle
-          next_proc_bvalid = 1'b1;
-
-          // Check if manager is ready THIS cycle
-          if (proc.BREADY) begin
-            // Handshake complete. Transition to AVAILABLE for NEXT cycle.
+          // Similar change for BVALID
+          if (proc.BVALID && proc.BREADY) begin
+            // Handshake complete, immediately deassert BVALID
+            next_proc_bvalid = 1'b0;
             next_state = CACHE_AVAILABLE;
-            // Clear flag for NEXT cycle's state update.
             next_pending_response_is_read = 1'b0;
             next_proc_arready = 1'b1;
             next_proc_awready = 1'b1;
             next_proc_wready = 1'b1;
+          end else begin
+            // No handshake yet, keep asserting BVALID
+            next_proc_bvalid = 1'b1;
           end
-
         end
-      end  // End of CACHE_AWAIT_MANAGER_READY 
+      end  // End of CACHE_AWAIT_MANAGER_READY
 
       CACHE_AWAIT_WRITEBACK_RESPONSE: begin
 
