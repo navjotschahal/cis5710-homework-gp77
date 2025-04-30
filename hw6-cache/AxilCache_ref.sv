@@ -92,15 +92,11 @@ module AxilMemory #(
   logic [31:0] ro_araddr;
   logic ro_araddr_valid;
 
-  initial begin
-
 `ifdef SYNTHESIS
-// TODO: fix this absolute path
-    $readmemh(
-        "/Users/devietti/Classes/perennial-comparch/cis5710-homework/hw6-cache/mem_initial_contents.hex",
-        mem_array);
-`endif
+  initial begin
+    $readmemh("mem_initial_contents.hex",mem_array);
   end
+`endif
 
   assign port_ro.RRESP = `RESP_OK;
   assign port_ro.BRESP = `RESP_OK;
@@ -284,9 +280,9 @@ module AxilCache #(
   wire [proc.ADDR_WIDTH-1:0] req_addr = proc.ARVALID ? proc.ARADDR : proc.AWVALID ? proc.AWADDR : 0;
   wire [IndexBits-1:0] cache_index = req_addr[AddrMsb -: IndexBits];
   wire [TagBits-1:0] req_tag = req_addr[proc.ADDR_WIDTH-1 -: TagBits];
-  wire is_request =
-    (proc.ARVALID && proc.ARREADY) ||
-    (proc.AWVALID && proc.WVALID && proc.AWREADY && proc.WREADY);
+  wire is_read_request = (proc.ARVALID && proc.ARREADY);
+  wire is_write_request = (proc.AWVALID && proc.WVALID && proc.AWREADY && proc.WREADY);
+  wire is_request = is_read_request || is_write_request;
   // either we're not sending a response, or our response was accepted
   wire can_send_new_response = !proc.RVALID || (proc.RVALID && proc.RREADY);
   wire [WAYS-1:0] way_hit_1hot;
@@ -435,10 +431,11 @@ module AxilCache #(
               current_state <= CACHE_AWAIT_WRITEBACK_RESPONSE;
             end
           end
-          if (((proc.RVALID && proc.RREADY) || (proc.BVALID && proc.BREADY)) &&
-            !(is_request && cache_hit)) begin
+          if ((proc.RVALID && proc.RREADY) && !(is_read_request && cache_hit)) begin
             proc.RVALID <= False;
             proc.RDATA <= 0;
+          end
+          if ((proc.BVALID && proc.BREADY) && !(is_write_request && cache_hit)) begin
             proc.BVALID <= False;
           end
         end

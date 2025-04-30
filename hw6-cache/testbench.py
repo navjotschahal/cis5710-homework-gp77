@@ -269,14 +269,14 @@ def runCocotbTestsProcessorDataCache(pytestconfig):
     pass
 
 @pytest.mark.hw6b
-def runCocotbTests(pytestconfig):
+def runCocotbTestsProcessor(pytestconfig):
     """calculate scores for autograder"""
     test_results = cu.aggregateTestResults(
-        get_results(Path(cu.SIM_BUILD_DIR,'runCocotbTestsDmCacheHitSmall.None')),
-        get_results(Path(cu.SIM_BUILD_DIR,'runCocotbTestsDmCacheHitBig.None')),
-        get_results(Path(cu.SIM_BUILD_DIR,'runCocotbTestsDmCacheMissSmall.None')),
-        get_results(Path(cu.SIM_BUILD_DIR,'runCocotbTestsDmCacheMissBig.None')),
-        get_results(Path(cu.SIM_BUILD_DIR,'runCocotbTestsProcessorNoCaches.None')),
+        # get_results(Path(cu.SIM_BUILD_DIR,'runCocotbTestsDmCacheHitSmall.None')),
+        # get_results(Path(cu.SIM_BUILD_DIR,'runCocotbTestsDmCacheHitBig.None')),
+        # get_results(Path(cu.SIM_BUILD_DIR,'runCocotbTestsDmCacheMissSmall.None')),
+        # get_results(Path(cu.SIM_BUILD_DIR,'runCocotbTestsDmCacheMissBig.None')),
+        get_results(Path(cu.SIM_BUILD_DIR,'runCocotbTestsProcessorNoCache.None')),
         get_results(Path(cu.SIM_BUILD_DIR,'runCocotbTestsProcessorDataCache.None')),
     )
     # 1 point per cocotb test
@@ -462,12 +462,10 @@ async def testLoadJalr(dut):
 Timing without D$:
 FDXMW
  FD**XMW
-  F**DXMW
     
 Timing with D$:
 FDXMddW
  FD****XMW
-  F****DXMW
 """
     await preTestSetup(dut, '''
         lw x1,0(x0)    # loads bits of the lw insn itself
