@@ -219,7 +219,7 @@ module DatapathPipelinedCache (
 
   // Calculate next PC value
   always_comb begin
-    if (load_use_hazard || div_data_hazard || fence_stall_condition)
+    if (load_use_hazard || div_data_hazard || fence_stall_condition || load_mem_stall)
       // Stall: keep PC the same during load-use hazard
       f_pc_next = f_pc_current;
     else if (e_branch_taken)
@@ -296,7 +296,7 @@ stage_decode_t decode_state_stall_reg;
 always_ff @(posedge clk) begin
   if (rst) begin
     decode_state_stall_reg <= '{pc: 0, insn: 0, cycle_status: CYCLE_RESET};
-  end else if (load_use_hazard || div_data_hazard || fence_stall_condition) begin
+  end else if (load_use_hazard || div_data_hazard || fence_stall_condition || load_mem_stall) begin
     decode_state_stall_reg <= decode_state;
   end
 end
@@ -419,7 +419,7 @@ end
           write_rd: 0,
           cycle_status: e_branch_taken ? CYCLE_TAKEN_BRANCH : CYCLE_RESET
       };
-    end else if (load_use_hazard) begin
+    end else if (load_use_hazard || load_mem_stall) begin
       // Insert bubble when load-use hazard detected
       execute_state <= '{
           pc: 0,
@@ -432,7 +432,6 @@ end
           write_rd: 0,
           cycle_status: CYCLE_LOAD2USE
       };
-
     end else if (div_data_hazard) begin
       // Insert bubble for division hazards or when starting a division
       execute_state <= '{
@@ -1033,6 +1032,9 @@ end
           write_rd: 0,
           cycle_status: CYCLE_RESET
       };
+      end else if (load_mem_stall) begin
+    // Keep memory_state unchanged during stall
+    memory_state <= memory_state;
     end else begin
       memory_state <= '{
           pc: e_pc,
@@ -1059,6 +1061,7 @@ end
   cycle_status_e m_cycle_status;
   logic use_w_m_bypass;
   logic [`OPCODE_SIZE] m_opcode;
+  logic load_mem_stall;
 
 
   // Connect memory stage signals
@@ -1082,6 +1085,9 @@ end
     // This matters for store instructions where rs2 contains the data to store
     use_w_m_bypass = (m_opcode == OpcodeStore) && (memory_state.insn[24:20] != 0) &&  // rs2 != x0
     (memory_state.insn[24:20] == w_rd_addr) && w_write_rd;
+
+    load_mem_stall = (m_opcode == OpcodeLoad) && !dcache.RVALID ; //&& !dcache.ARVALID;
+
   end
 
   // Passing ALU result through to Writeback stage
