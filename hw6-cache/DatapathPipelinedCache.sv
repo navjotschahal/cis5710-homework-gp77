@@ -296,7 +296,7 @@ stage_decode_t decode_state_stall_reg;
 always_ff @(posedge clk) begin
   if (rst) begin
     decode_state_stall_reg <= '{pc: 0, insn: 0, cycle_status: CYCLE_RESET};
-  end else if (load_use_hazard || div_data_hazard || fence_stall_condition ) begin
+  end else if (load_use_hazard || div_data_hazard || fence_stall_condition || mem_busy ) begin
     decode_state_stall_reg <= decode_state;
   end
 end
@@ -445,7 +445,10 @@ end
           write_rd: 0,
           cycle_status: CYCLE_DIV
       };
-    end else begin
+    end else if(mem_busy) begin
+      execute_state <= execute_state;
+    end
+    else begin
       // Normal operation
       execute_state <= '{
           pc: decode_state.pc,
@@ -1039,9 +1042,9 @@ end
           write_rd: 0,
           cycle_status: CYCLE_RESET
       };
-      end else if (mem_busy) begin
-    // Keep memory_state unchanged during stall
-    memory_state <= memory_state;
+    //   end else if (mem_busy) begin
+    // // Keep memory_state unchanged during stall
+    // memory_state <= memory_state;
     end else begin
       memory_state <= '{
           pc: e_pc,
