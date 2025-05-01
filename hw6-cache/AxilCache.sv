@@ -97,7 +97,7 @@ module AxilMemory #(
 `ifdef SYNTHESIS
 // TODO: fix this absolute path
     $readmemh(
-        "/Users/devietti/Classes/perennial-comparch/cis5710-homework/hw6-cache/mem_initial_contents.hex",
+        "./mem_initial_contents.hex",
         mem_array);
 `endif
   end

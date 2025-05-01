@@ -219,7 +219,7 @@ module DatapathPipelinedCache (
 
   // Calculate next PC value
   always_comb begin
-    if (load_use_hazard || div_data_hazard || fence_stall_condition || load_mem_stall)
+    if (load_use_hazard || div_data_hazard || fence_stall_condition)
       // Stall: keep PC the same during load-use hazard
       f_pc_next = f_pc_current;
     else if (e_branch_taken)
@@ -296,7 +296,7 @@ stage_decode_t decode_state_stall_reg;
 always_ff @(posedge clk) begin
   if (rst) begin
     decode_state_stall_reg <= '{pc: 0, insn: 0, cycle_status: CYCLE_RESET};
-  end else if (load_use_hazard || div_data_hazard || fence_stall_condition || load_mem_stall) begin
+  end else if (load_use_hazard || div_data_hazard || fence_stall_condition ) begin
     decode_state_stall_reg <= decode_state;
   end
 end
@@ -419,7 +419,7 @@ end
           write_rd: 0,
           cycle_status: e_branch_taken ? CYCLE_TAKEN_BRANCH : CYCLE_RESET
       };
-    end else if (load_use_hazard || load_mem_stall) begin
+    end else if (load_use_hazard) begin
       // Insert bubble when load-use hazard detected
       execute_state <= '{
           pc: 0,
@@ -939,14 +939,17 @@ end
     end
   end
 
-  // Detect load-use hazard (load in Execute, dependent instruction in Decode)
+    // Detect load-use hazard (load in Execute, dependent instruction in Decode)
   logic load_use_hazard;
   logic insn_uses_rs1;
   logic insn_uses_rs2;
   logic decode_uses_execute_rd;
+  logic decode_uses_memory_rd;
   always_comb begin
     // Detect if Execute stage contains a load instruction
     logic execute_has_load = (e_opcode == OpcodeLoad);
+    // Detect if Memory stage contains a load instruction still waiting for data
+    logic memory_has_pending_load = (m_opcode == OpcodeLoad) && !dcache.RVALID;
 
     case (d_opcode)
       OpcodeRegReg: begin
@@ -1004,9 +1007,13 @@ end
     decode_uses_execute_rd = (execute_has_load && e_write_rd && e_rd_addr != 0) && 
                                 ((d_rs1 == e_rd_addr && d_rs1 != 0 && insn_uses_rs1) || 
                                  (d_rs2 == e_rd_addr && d_rs2 != 0 && insn_uses_rs2) && d_opcode != OpcodeStore);
+                                 
+    decode_uses_memory_rd = (memory_has_pending_load && m_write_rd && m_rd_addr != 0) &&
+                               ((d_rs1 == m_rd_addr && d_rs1 != 0 && insn_uses_rs1) ||
+                                (d_rs2 == m_rd_addr && d_rs2 != 0 && insn_uses_rs2) && d_opcode != OpcodeStore);
 
-    // Load-use hazard detected
-    load_use_hazard = execute_has_load && decode_uses_execute_rd;
+    // Load-use hazard detected - stall if load in execute or pending in memory
+    load_use_hazard = (execute_has_load && decode_uses_execute_rd) || decode_uses_memory_rd;
   end
 
   // Disassembly for debugging
@@ -1032,7 +1039,7 @@ end
           write_rd: 0,
           cycle_status: CYCLE_RESET
       };
-      end else if (load_mem_stall) begin
+      end else if (mem_busy) begin
     // Keep memory_state unchanged during stall
     memory_state <= memory_state;
     end else begin
@@ -1061,7 +1068,7 @@ end
   cycle_status_e m_cycle_status;
   logic use_w_m_bypass;
   logic [`OPCODE_SIZE] m_opcode;
-  logic load_mem_stall;
+  logic mem_busy;
 
 
   // Connect memory stage signals
@@ -1086,7 +1093,7 @@ end
     use_w_m_bypass = (m_opcode == OpcodeStore) && (memory_state.insn[24:20] != 0) &&  // rs2 != x0
     (memory_state.insn[24:20] == w_rd_addr) && w_write_rd;
 
-    load_mem_stall = (m_opcode == OpcodeLoad) && !dcache.RVALID ; //&& !dcache.ARVALID;
+    mem_busy = (m_opcode == OpcodeLoad) && !dcache.RVALID && (m_rd_addr != 5'd0);
 
   end
 
@@ -1169,8 +1176,49 @@ assign load_data_from_dmem = dcache.RDATA;
       end else begin
         // Normal operation
         // In the writeback stage, where load data is processed:
-        if (m_opcode == OpcodeLoad) begin
-  case (m_insn[14:12])  // funct3 field
+        
+ if (m_opcode != OpcodeLoad) begin
+          result_value = m_alu_result;  // ALU result for non-load instructions
+        end
+        writeback_state <= '{
+            pc: m_pc,
+            insn: m_insn,
+            result: result_value,
+            rd_addr: m_rd_addr,
+            write_rd: m_write_rd,
+            cycle_status:
+            (
+            m_cycle_status == CYCLE_TAKEN_BRANCH && m_insn != 0
+            ) ?
+            CYCLE_NO_STALL
+            :
+            m_cycle_status
+        };
+      end
+    end
+  end
+
+  /*******************/
+  /* WRITEBACK STAGE */
+  /*******************/
+
+  // Writeback stage signals
+  logic [`REG_SIZE] w_pc, w_result;
+  logic [`INSN_SIZE] w_insn;
+  cycle_status_e w_cycle_status;
+  logic [`REG_SIZE] result_value;
+  logic [`OPCODE_SIZE] w_opcode;
+
+  // Connect writeback stage signals
+  always_comb begin
+    w_pc = writeback_state.pc;
+    w_insn = writeback_state.insn;
+        result_value = writeback_state.result;
+            w_opcode = w_insn[6:0];
+
+
+    if (w_opcode == OpcodeLoad) begin
+  case (w_insn[14:12])  // funct3 field
     3'b000: begin  // LB (load byte)
       case (m_alu_result[1:0])  // Check the byte offset
         2'b00: result_value = {{24{load_data_from_dmem[7]}}, load_data_from_dmem[7:0]};  // Byte 0
@@ -1213,41 +1261,8 @@ assign load_data_from_dmem = dcache.RDATA;
     end
     default: result_value = load_data_from_dmem;
   endcase
-end else begin
-          result_value = m_alu_result;  // ALU result for non-load instructions
-        end
-        writeback_state <= '{
-            pc: m_pc,
-            insn: m_insn,
-            result: result_value,
-            rd_addr: m_rd_addr,
-            write_rd: m_write_rd,
-            cycle_status:
-            (
-            m_cycle_status == CYCLE_TAKEN_BRANCH && m_insn != 0
-            ) ?
-            CYCLE_NO_STALL
-            :
-            m_cycle_status
-        };
-      end
     end
-  end
-
-  /*******************/
-  /* WRITEBACK STAGE */
-  /*******************/
-
-  // Writeback stage signals
-  logic [`REG_SIZE] w_pc, w_result;
-  logic [`INSN_SIZE] w_insn;
-  cycle_status_e w_cycle_status;
-
-  // Connect writeback stage signals
-  always_comb begin
-    w_pc = writeback_state.pc;
-    w_insn = writeback_state.insn;
-    w_result = writeback_state.result;
+    w_result = result_value;
     w_rd_addr = writeback_state.rd_addr;
     w_write_rd = writeback_state.write_rd;
     w_cycle_status = writeback_state.cycle_status;
